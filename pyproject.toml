@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "homework2-agentcoder"
+version = "1.0.0"
+description = "A three-agent coding, review and repair workflow with durable state and live progress."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+agentcoder = "agentcoder.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["agentcoder*"]
+
+[tool.setuptools.package-data]
+agentcoder = ["static/*"]

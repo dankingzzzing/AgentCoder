@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AgentCoder · 多 Agent 协作</title><link rel="stylesheet" href="/style.css"><script defer src="/markdown.js"></script><script defer src="/app.js"></script></head>
+<body>
+<header><a class="brand" href="/">AGENTCODER <small>Homework 02</small></a><button id="settings" class="quiet" type="button">模型设置</button></header>
+<dialog id="model-dialog" aria-labelledby="model-title"><form id="model-form" autocomplete="off">
+  <div class="heading"><h2 id="model-title">连接你的模型</h2><button id="close-settings" class="quiet" type="button">关闭</button></div>
+  <p class="muted">三个 Agent 使用同一模型，分别承担编码、审查和修复职责。</p>
+  <label for="api-key">API Key</label><input type="password" id="api-key" autocomplete="off" maxlength="4096" placeholder="填写 API Key">
+  <p class="note">密钥不回显；已保存时留空沿用。</p>
+  <label for="model">模型名称</label><input id="model" placeholder="支持工具调用的模型" required maxlength="200">
+  <label for="base-url">API 服务地址</label><input id="base-url" type="url" required value="https://api.openai.com/v1" maxlength="2000">
+  <label for="api-style">接口协议</label><select id="api-style"><option value="auto">自动选择（推荐）</option><option value="chat_completions">Chat Completions 兼容接口</option><option value="responses">OpenAI Responses 接口</option></select>
+  <label class="check"><input id="remember" type="checkbox" checked>在本机记住，刷新和重启后恢复</label>
+  <p class="note">Windows 密钥用当前用户加密保存，不进入 GitHub 和提交包。</p>
+  <p id="settings-status" class="note" role="status"></p>
+  <div class="actions"><button type="button" id="use-demo" class="secondary">离线演示</button><button type="submit" id="verify" class="primary">验证并进入</button></div>
+</form></dialog>
+<main>
+  <section class="intro"><p class="eyebrow">三个角色 · 一个完整流程</p><h1>把代码交给下一位，<br>让问题在交接中解决。</h1><p class="muted">编码 Agent 交付实现与测试，审查 Agent 核对证据，<br>修复 Agent 修改代码，再交回审查。</p><span id="mode" class="mode">正在连接本机服务…</span></section>
+  <section class="flow-section" aria-label="工作流图"><div class="heading"><h2>协作流程</h2><span id="cycle" class="note">等待运行</span></div><div id="graph" class="graph"></div><p class="note">通过 → 交付　　未通过 → 修复 → 复审　　达到轮次上限 → 保留未解决问题</p></section>
+  <div class="workspace-grid">
+  <section class="panel"><div class="heading"><h2>开始一次协作</h2><button id="new-run" class="quiet" type="button">新运行</button></div>
+    <form id="run-form">
+      <label for="task">需求与功能契约</label><textarea id="task" rows="5" required maxlength="4000"></textarea>
+      <div id="demo-options"><label for="scenario">演示起点</label><select id="scenario"><option value="buggy">含缺陷模块：展示完整修复循环</option><option value="clean">正确模块：展示直接通过分支</option></select><p class="note">离线模式使用固定教学需求和规则 Agent，不调用模型。</p></div>
+      <details id="source-section"><summary>从本地 Python 模块开始（可选）</summary><div class="source-actions"><input id="source-path" placeholder="粘贴 .py 文件路径"><button id="read-source" type="button" class="secondary">读取</button><button id="pick-source" type="button" class="secondary">选择文件</button></div><textarea id="source" rows="6" maxlength="65536" placeholder="也可直接粘贴原始 Python 代码"></textarea><p class="note">源文件不会被覆盖；产物保存在独立运行目录中。</p></details>
+      <div class="options"><div><label for="max-cycles">最多修复轮次</label><select id="max-cycles"><option>1</option><option>2</option><option selected>3</option><option>5</option></select></div><label class="check"><input id="allow-exec" type="checkbox">运行生成代码的测试<br>（仅对可信代码开启）</label></div>
+      <div class="actions"><button id="cancel" type="button" class="secondary" hidden>停止</button><button id="resume" type="button" class="secondary" hidden>从失败节点继续</button><button id="run" type="submit" class="primary" disabled>开始协作 ↗</button></div>
+    </form><p id="status" role="status">完成模型设置或进入离线演示。</p>
+  </section>
+  <section class="panel execution"><div class="heading"><h2>实时执行进度</h2><span id="elapsed" class="note">0 秒</span></div><p id="stage" class="muted">行动、消息交接和实际测试结果会在这里即时显示。</p><ol id="trace"></ol></section>
+  </div>
+  <section id="results" hidden><div class="heading"><h2>交付与审查记录</h2><button id="download" type="button" class="quiet">下载报告 ↓</button></div><p id="metrics" class="note"></p>
+    <div class="tabs" role="tablist"><button class="active" type="button" data-tab="report">审查报告</button><button type="button" data-tab="code">最新代码</button><button type="button" data-tab="tests">冻结测试</button><button type="button" data-tab="messages">Agent 消息</button></div>
+    <article id="report" class="panel"></article><pre id="code" class="panel" hidden></pre><pre id="tests" class="panel" hidden></pre><pre id="messages" class="panel" hidden></pre>
+  </section>
+  <section class="history-section"><div class="heading"><h2>最近运行</h2><button type="button" id="refresh-history" class="quiet">刷新记录</button></div><div id="history" class="history"></div></section>
+</main><footer><span>2412190104 · 唐佳杰</span><span>顺序执行 · 消息传递 · 状态恢复</span></footer>
+</body></html>
