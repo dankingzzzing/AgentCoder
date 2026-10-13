@@ -46,6 +46,8 @@ class Config:
     base_url: str = "https://api.openai.com/v1"
     api_style: str = "auto"
     timeout: float = 45
+    stream_idle_timeout: float = 120
+    stream_mode: str = "auto"
     max_retries: int = 2
     max_steps: int = 12
     max_tool_calls: int = 32
@@ -75,6 +77,9 @@ class Config:
         style = values.get("LLM_API_STYLE", "auto").strip()
         if style not in {"auto", "responses", "chat_completions"}:
             raise ConfigError("LLM_API_STYLE 只能是 auto、responses 或 chat_completions。")
+        stream_mode = values.get("LLM_STREAM_MODE", "auto").strip()
+        if stream_mode not in {"auto", "stream", "buffered"}:
+            raise ConfigError("LLM_STREAM_MODE 只能是 auto、stream 或 buffered。")
         base_url = values.get("LLM_BASE_URL", cls.base_url).strip().rstrip("/")
         for endpoint in ("/chat/completions", "/responses"):
             if base_url.endswith(endpoint):
@@ -94,6 +99,8 @@ class Config:
             base_url=base_url,
             api_style=style,
             timeout=number("LLM_TIMEOUT", 45.0, 1, 300),
+            stream_idle_timeout=number("LLM_STREAM_IDLE_TIMEOUT", 120.0, 1, 300),
+            stream_mode=stream_mode,
             max_retries=number("LLM_MAX_RETRIES", 2, 0, 5),
             max_steps=number("AGENT_MAX_STEPS", 12, 1, 30),
             max_tool_calls=number("AGENT_MAX_TOOL_CALLS", 32, 1, 100),
@@ -110,12 +117,14 @@ class Config:
         return "responses" if urlsplit(self.base_url).hostname == "api.openai.com" else "chat_completions"
 
     def with_web_settings(self, values: dict) -> "Config":
-        allowed = {"api_key", "model", "base_url", "api_style"}
+        allowed = {"api_key", "model", "base_url", "api_style", "stream_idle_timeout", "stream_mode"}
         if set(values) - allowed or any(not isinstance(v, str) for v in values.values()):
             raise ConfigError("模型配置必须是 API key、模型、服务地址和协议字符串。")
         current = asdict(self)
         mapping = {"api_key": "LLM_API_KEY", "model": "LLM_MODEL", "base_url": "LLM_BASE_URL",
                    "api_style": "LLM_API_STYLE", "timeout": "LLM_TIMEOUT", "max_retries": "LLM_MAX_RETRIES",
+                   "stream_idle_timeout": "LLM_STREAM_IDLE_TIMEOUT",
+                   "stream_mode": "LLM_STREAM_MODE",
                    "max_steps": "AGENT_MAX_STEPS", "max_tool_calls": "AGENT_MAX_TOOL_CALLS",
                    "memory_turns": "AGENT_MEMORY_TURNS", "test_timeout": "AGENT_TEST_TIMEOUT",
                    "project_max_files": "AGENT_PROJECT_MAX_FILES", "project_max_chars": "AGENT_PROJECT_MAX_CHARS"}

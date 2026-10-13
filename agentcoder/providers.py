@@ -6,6 +6,7 @@ import json
 import random
 import re
 import time
+from http.client import HTTPException
 from dataclasses import dataclass, field, replace
 from typing import Callable, Protocol
 from urllib.error import HTTPError, URLError
@@ -13,6 +14,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .config import Config
 from .errors import ProviderError
+from .cancellable_io import poll_io, check_stopped, AbortableHTTPHandler, AbortableHTTPSHandler
 
 
 @dataclass(frozen=True)
@@ -63,16 +65,17 @@ class LLMProvider:
         self.identity = f"llm:{self.config.api_style}:{config.base_url}:{config.model}"
         self.label = f"LLM · {config.model}"
         self.sleeper = sleeper
-        self.opener = build_opener(_NoRedirect())
+        self.opener = build_opener(_NoRedirect(), AbortableHTTPHandler(), AbortableHTTPSHandler())
 
-    def _post(self, endpoint: str, payload: dict) -> dict:
+    def _post(self, endpoint: str, payload: dict, *, timeout=None) -> dict:
         request = Request(f"{self.config.base_url}/{endpoint}",
                           data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                           headers={"Content-Type": "application/json",
                                    "Authorization": f"Bearer {self.config.api_key}"}, method="POST")
         for attempt in range(self.config.max_retries + 1):
+            check_stopped()
             try:
-                with self.opener.open(request, timeout=self.config.timeout) as response:
+                with self.opener.open(request, timeout=timeout or self.config.timeout) as response:
                     raw = response.read(2 * 1024 * 1024 + 1)
                 if len(raw) > 2 * 1024 * 1024:
                     raise ProviderError("模型响应超过 2 MiB 限制。")
@@ -95,12 +98,13 @@ class LLMProvider:
                     delay = 0
                 exc.close()
                 self.sleeper(max(delay, min(0.5 * 2 ** attempt, 5)) + random.uniform(0, 0.1))
-            except (URLError, TimeoutError, OSError) as exc:
+            except (URLError, TimeoutError, OSError, HTTPException) as exc:
+                check_stopped()
                 if attempt == self.config.max_retries:
-                    raise ProviderError("无法连接模型服务或请求超时，重试次数已用完。") from exc
+                    raise ProviderError("无法连接模型服务或请求超时，重试次数已用完。", code="http_transport", retryable=True) from exc
                 self.sleeper(min(0.5 * 2 ** attempt, 5) + random.uniform(0, 0.1))
             except (ValueError, UnicodeError) as exc:
-                raise ProviderError("模型服务返回的内容不是有效 UTF-8 JSON。") from exc
+                raise ProviderError("模型服务返回的内容不是有效 UTF-8 JSON。", code="json_format") from exc
         raise ProviderError("LLM 请求失败。")
 
     def _error_detail(self, error: HTTPError) -> str:
@@ -126,7 +130,10 @@ class LLMProvider:
                                "required": ["value"], "additionalProperties": False}}}
         messages = [{"role": "system", "content": "This is a connection test. You must call connection_check once with value OK, then reply OK after its result. Do not use other tools."},
                     {"role": "user", "content": "Call connection_check now."}]
-        reply = self.stream_complete(messages, [tool], lambda text: None, tool_choice="connection_check")
+        if self.config.stream_mode == "buffered":
+            reply = self.buffered_complete(messages, [tool], tool_choice="connection_check")
+        else:
+            reply = self.stream_complete(messages, [tool], lambda text: None, tool_choice="connection_check")
         if len(reply.calls) != 1 or reply.calls[0].name != "connection_check":
             raise ProviderError("模型未返回验证工具调用。请检查该模型是否支持工具调用，或切换 API 协议。")
         call = reply.calls[0]
@@ -136,7 +143,10 @@ class LLMProvider:
         except ValueError as exc:
             raise ProviderError("模型返回的验证工具参数无效。") from exc
         messages.extend([reply.message(), {"role": "tool", "tool_call_id": call.id, "content": "OK"}])
-        final = self.stream_complete(messages, [tool], lambda text: None, tool_choice="none")
+        if self.config.stream_mode == "buffered":
+            final = self.buffered_complete(messages, [tool], tool_choice="none")
+        else:
+            final = self.stream_complete(messages, [tool], lambda text: None, tool_choice="none")
         if not final.content or final.calls:
             raise ProviderError("模型没有完成验证工具结果的处理，请检查模型或 API 协议。")
         return {"connected": True, "tool_calling": True, "api_style": self.config.api_style,
@@ -148,14 +158,30 @@ class LLMProvider:
         return self._chat(messages, tools)
 
     def stream_complete(self, messages: list[dict], tools: list[dict], on_text: Callable[[str], None],
-                        *, on_activity: Callable[[], None] | None = None, tool_choice: str | None = None) -> Reply:
+                        *, on_activity: Callable[[], None] | None = None, tool_choice: str | None = None,
+                        cancelled=None, on_progress=None, on_tool_delta=None) -> Reply:
         """Stream public answer text; keep provider reasoning private to protocol state."""
         try:
-            return self._stream_complete(messages, tools, on_text, on_activity, tool_choice)
+            return self._stream_complete(messages, tools, on_text, on_activity, tool_choice,
+                                         cancelled, on_progress, on_tool_delta)
         except (KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
-            raise ProviderError("模型流式响应格式无效。") from exc
+            raise ProviderError("模型流式响应字段格式无效。", code="response_format") from exc
 
-    def _stream_complete(self, messages, tools, on_text, on_activity, tool_choice):
+    def _stream_complete(self, messages, tools, on_text, on_activity, tool_choice, cancelled, on_progress, on_tool_delta):
+        signals, public_chars = 0, 0
+        def progress(event):
+            nonlocal signals, public_chars
+            signals += 1
+            if event.get('type') in {'response.output_text.delta','response.function_call_arguments.delta'}:
+                public_chars += len(event.get('delta','')) if isinstance(event.get('delta'),str) else 0
+            for choice in event.get('choices') or []:
+                delta = choice.get('delta') or {}
+                if isinstance(delta.get('content'),str):public_chars += len(delta['content'])
+                for call in delta.get('tool_calls') or []:
+                    arguments = call.get('function',{}).get('arguments')
+                    if isinstance(arguments,str):public_chars += len(arguments)
+            if on_progress:
+                on_progress({"signals": signals, "public_chars":public_chars, "stage": "receiving" if public_chars else "processing"})
         if self.config.api_style == "responses":
             payload = self._responses_payload(messages, tools)
             if tool_choice:
@@ -163,9 +189,11 @@ class LLMProvider:
                                           else {"type": "function", "name": tool_choice})
             payload["stream"] = True
             final = None
-            for event in self._stream_events("responses", payload):
-                if on_activity:
-                    on_activity()
+            call_names, call_arguments = {}, {}
+            for event in poll_io(lambda: self._stream_events("responses", payload), cancelled=cancelled, on_activity=on_activity):
+                progress(event)
+                if "_nonstream" in event:
+                    return self._parse_responses(event["_nonstream"])
                 if event.get("type") == "response.output_text.delta":
                     delta = event.get("delta", "")
                     if not isinstance(delta, str):
@@ -173,10 +201,18 @@ class LLMProvider:
                     on_text(delta)
                 elif event.get("type") == "response.completed":
                     final = event["response"]
+                elif event.get("type") == "response.output_item.added" and event.get("item", {}).get("type") == "function_call":
+                    item = event["item"]
+                    call_names[item["id"]] = item["name"]
+                elif event.get("type") == "response.function_call_arguments.delta":
+                    item_id = event.get("item_id", "")
+                    call_arguments[item_id] = call_arguments.get(item_id, "") + event.get("delta", "")
+                    if on_tool_delta and item_id in call_names:
+                        on_tool_delta(call_names[item_id], call_arguments[item_id])
                 elif event.get("type") in {"error", "response.failed", "response.incomplete"}:
                     raise ProviderError("模型流式响应失败或未完整生成。")
             if final is None:
-                raise ProviderError("模型流中缺少完成事件。")
+                raise ProviderError("模型流在完成事件前结束；当前节点没有提交。", code="stream_incomplete", retryable=True)
             return self._parse_responses(final)
         payload = self._chat_payload(messages, tools)
         if tool_choice:
@@ -185,9 +221,10 @@ class LLMProvider:
         payload["stream"] = True
         text, reasoning, calls = [], [], {}
         finished = False
-        for event in self._stream_events("chat/completions", payload):
-            if on_activity:
-                on_activity()
+        for event in poll_io(lambda: self._stream_events("chat/completions", payload), cancelled=cancelled, on_activity=on_activity):
+            progress(event)
+            if "_nonstream" in event:
+                return self._parse_chat(event["_nonstream"])
             if event.get("error"):
                 raise ProviderError("模型流式响应返回了服务错误。")
             for choice in event.get("choices", []):
@@ -210,11 +247,28 @@ class LLMProvider:
                     function = fragment.get("function", {})
                     call["name"] += function.get("name") or ""
                     call["arguments"] += function.get("arguments") or ""
+                    if on_tool_delta:
+                        on_tool_delta(call["name"], call["arguments"])
         if not finished:
-            raise ProviderError("模型流提前断开，未获得完整报告。")
+            raise ProviderError("模型流在完成标志前断开；当前节点没有提交。", code="stream_incomplete", retryable=True)
         assembled = [ToolCall(**calls[i]) for i in sorted(calls)]
         self._validate_calls(assembled)
         return Reply("".join(text), assembled, provider_fields={"reasoning_content": "".join(reasoning)} if reasoning else {})
+
+    def buffered_complete(self, messages, tools, *, tool_choice, cancelled=None, on_activity=None):
+        endpoint = "responses" if self.config.api_style == "responses" else "chat/completions"
+        payload = self._responses_payload(messages, tools) if endpoint == "responses" else self._chat_payload(messages, tools)
+        if tool_choice:
+            payload["tool_choice"] = (tool_choice if tool_choice in {"none", "auto", "required"} else
+                {"type": "function", "name": tool_choice} if endpoint == "responses" else
+                {"type": "function", "function": {"name": tool_choice}})
+        payload["stream"] = False
+        def producer():
+            yield self._post(endpoint, payload, timeout=max(180, self.config.timeout, self.config.stream_idle_timeout))
+        values = list(poll_io(producer, cancelled=cancelled, on_activity=on_activity))
+        if not values:
+            raise ProviderError("普通响应没有返回结果。", code="empty_response")
+        return self._parse_responses(values[0]) if endpoint == "responses" else self._parse_chat(values[0])
 
     def _stream_events(self, endpoint: str, payload: dict):
         request = Request(f"{self.config.base_url}/{endpoint}", data=json.dumps(payload, ensure_ascii=False).encode(),
@@ -222,8 +276,9 @@ class LLMProvider:
                                    "Authorization": f"Bearer {self.config.api_key}"}, method="POST")
         response = None
         for attempt in range(self.config.max_retries + 1):
+            check_stopped()
             try:
-                response = self.opener.open(request, timeout=self.config.timeout)
+                response = self.opener.open(request, timeout=self.config.stream_idle_timeout)
                 break
             except HTTPError as exc:
                 retry = exc.code in {408, 429, 500, 502, 503, 504} and attempt < self.config.max_retries
@@ -232,14 +287,26 @@ class LLMProvider:
                     raise ProviderError(f"LLM HTTP {exc.code}。请检查密钥、模型及协议。{detail}", http_status=exc.code) from exc
                 exc.close()
                 self.sleeper(min(.5 * 2 ** attempt, 5))
-            except (URLError, TimeoutError, OSError) as exc:
+            except (URLError, TimeoutError, OSError, HTTPException) as exc:
+                check_stopped()
                 if attempt == self.config.max_retries:
-                    raise ProviderError("无法连接模型服务或请求超时。") from exc
+                    raise ProviderError("等待模型连接或响应头超时。", code="stream_connect", retryable=True) from exc
                 self.sleeper(min(.5 * 2 ** attempt, 5))
         total, data = 0, []
         try:
             with response:
+                content_type = getattr(response, "headers", {}).get("Content-Type", "")
+                if "application/json" in content_type:
+                    raw = response.read(2 * 1024 * 1024 + 1)
+                    if len(raw) > 2 * 1024 * 1024:
+                        raise ProviderError("模型响应超过 2 MiB 限制。", code="output_limit")
+                    value = json.loads(raw)
+                    if not isinstance(value, dict):
+                        raise ValueError("invalid JSON body")
+                    yield {"_nonstream": value}
+                    return
                 for raw in response:
+                    check_stopped()
                     total += len(raw)
                     if total > 4 * 1024 * 1024 or len(raw) > 1024 * 1024:
                         raise ProviderError("模型流超过输出大小上限。")
@@ -255,8 +322,21 @@ class LLMProvider:
                         if not isinstance(parsed, dict):
                             raise ValueError("invalid stream event")
                         yield parsed
-        except (OSError, ValueError, UnicodeError) as exc:
-            raise ProviderError("模型流传输中断或响应格式无效。") from exc
+                if data:
+                    value = "\n".join(data)
+                    if value != "[DONE]":
+                        parsed = json.loads(value)
+                        if not isinstance(parsed, dict):
+                            raise ValueError("invalid stream event")
+                        yield parsed
+        except TimeoutError as exc:
+            check_stopped()
+            raise ProviderError(f"模型连续 {self.config.stream_idle_timeout:g} 秒未返回数据，读取超时。", code="stream_timeout", retryable=True) from exc
+        except (OSError, HTTPException) as exc:
+            check_stopped()
+            raise ProviderError("模型连接在传输中关闭或数据未传完。", code="stream_transport", retryable=True) from exc
+        except (ValueError, UnicodeError) as exc:
+            raise ProviderError("模型 SSE 数据不是有效的 UTF-8 JSON。", code="sse_format") from exc
 
     @staticmethod
     def _validate_calls(calls: list[ToolCall]) -> None:
@@ -265,7 +345,7 @@ class LLMProvider:
         for call in calls:
             if (not isinstance(call.id, str) or not call.id or not isinstance(call.name, str)
                     or not call.name or not isinstance(call.arguments, str)
-                    or len(call.arguments) > 20000):
+                    or len(call.arguments.encode("utf-8")) > 196608):
                 raise ProviderError("模型返回了无效的工具调用格式。")
 
     def _chat_payload(self, messages: list[dict], tools: list[dict]) -> dict:
@@ -277,6 +357,9 @@ class LLMProvider:
 
     def _chat(self, messages: list[dict], tools: list[dict]) -> Reply:
         value = self._post("chat/completions", self._chat_payload(messages, tools))
+        return self._parse_chat(value)
+
+    def _parse_chat(self, value):
         try:
             choice = value["choices"][0]
             if choice.get("finish_reason") in {"length", "content_filter"}:

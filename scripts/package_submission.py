@@ -1,6 +1,7 @@
 """Build the Homework 2 backup ZIP without secrets, run data or development caches."""
 
 import sys
+import argparse
 from pathlib import Path
 from zipfile import ZipFile, ZIP_DEFLATED
 
@@ -17,7 +18,11 @@ def included(path):
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    name = "2412190104唐佳杰"
+    parser = argparse.ArgumentParser(description="生成不含本机设置和内部运行数据的提交包")
+    parser.add_argument('--name',default='homework2-submission',help='备份提交时填写学号姓名，仅用于本机包名')
+    name = parser.parse_args().name
+    if not name or len(name)>120 or name in {'.','..'} or any(c in name for c in '/\\<>:"|?*\x00'):
+        raise SystemExit('提交包名称必须是普通文件名。')
     output = ROOT / "artifacts" / (name + ".zip")
     output.parent.mkdir(exist_ok=True)
     with ZipFile(output, "w", compression=ZIP_DEFLATED, compresslevel=9) as archive:

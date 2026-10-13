@@ -57,7 +57,7 @@ def build_evidence(state):
             node_seconds[node] = round(node_seconds.get(node, 0) + max(0, (instant - starts.pop(node)).total_seconds()), 3)
     return {"run_id": state.id, "status": state.status, "mode": state.mode,
         "acceptance": "verified" if verified else "unverified" if state.status == "completed" else "unfinished",
-        "final_tests": latest["tests"]["status"] if latest else "not_run", "tests_run": latest["tests"]["tests_run"] if latest else None,
+        "final_tests": latest["tests"]["status"] if latest else "not_started", "tests_run": latest["tests"]["tests_run"] if latest else None,
         "tests_frozen": frozen, "tests_sha256": digest(state.baseline_tests) if frozen else None,
         "code_sha256": current_hash if state.artifacts else None,
         "repairs": state.cycle, "messages": len(state.messages), "reviews": len(state.reviews),

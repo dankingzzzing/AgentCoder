@@ -30,6 +30,8 @@ class WorkflowState:
     scenario: str = "buggy"
     example: str = "contracts"
     initial_source: str = ""
+    initial_tests: str = ""
+    test_module: str = "solution"
     graph: dict = field(default_factory=default_graph)
     status: str = "created"
     phase: str = "coding"
@@ -42,6 +44,10 @@ class WorkflowState:
     messages: list = field(default_factory=list)
     events: list = field(default_factory=list)
     error: str = ""
+    error_code: str = ""
+    workdir: str = ""
+    drafts: dict = field(default_factory=dict)
+    progress: dict = field(default_factory=dict)
     created_at: str = field(default_factory=timestamp)
     updated_at: str = field(default_factory=timestamp)
     version: int = 1
@@ -55,12 +61,16 @@ class WorkflowState:
         state = cls(uuid.uuid4().hex, task.strip(), mode, **options)
         state.phase = state.graph.get("entry", "coding")
         state.nodes = {node["id"]: "pending" for node in state.graph.get("nodes", [])}
+        from .inputs import normalize_test_input
+        normalize_test_input(state)
         state.validate()
         return state
 
     def validate(self):
         from .fixtures import get_case
+        from .inputs import module_name
         get_case(self.example)
+        module_name(self.test_module)
         graph_nodes = validate_graph(self.graph)
         if (not isinstance(self.id, str) or not re.fullmatch(r"[a-f0-9]{32}", self.id)
                 or self.version != 1 or self.mode not in {"demo", "llm"}
@@ -70,6 +80,7 @@ class WorkflowState:
                 or type(self.cycle) is not int or not 0 <= self.cycle <= self.max_cycles
                 or type(self.allow_exec) is not bool or self.scenario not in {"buggy", "clean"}
                 or not isinstance(self.initial_source, str) or len(self.initial_source.encode()) > 65536
+                or not isinstance(self.initial_tests,str) or len(self.initial_tests.encode()) > 65536
                 or not isinstance(self.task, str) or not 1 <= len(self.task) <= 4000):
             raise AgentError("工作流状态或运行参数无效。")
         if (not isinstance(self.nodes, dict) or set(self.nodes) != set(graph_nodes)
@@ -77,6 +88,10 @@ class WorkflowState:
                 or not isinstance(self.artifacts, dict) or set(self.artifacts) - {"solution.py", "test_solution.py"}
                 or any(not isinstance(v, str) or len(v.encode()) > 65536 for v in self.artifacts.values())
                 or not isinstance(self.baseline_tests, str)
+                or not isinstance(self.error_code, str) or not isinstance(self.workdir, str)
+                or len(self.workdir) > 4096 or not isinstance(self.progress, dict)
+                or not isinstance(self.drafts, dict) or set(self.drafts) - {"solution.py", "test_solution.py"}
+                or any(not isinstance(v, str) or len(v.encode()) > 65536 for v in self.drafts.values())
                 or not all(isinstance(v, list) for v in (self.reviews, self.revisions, self.messages, self.events))):
             raise AgentError("工作流数据格式无效。")
         if self.baseline_tests and self.artifacts.get("test_solution.py") != self.baseline_tests:
@@ -128,7 +143,10 @@ class RunStore:
 
     def write(self, run_id, name, text):
         if name not in {"state.json", "report.md", "evidence.json", "solution.py", "test_solution.py"}:
-            raise AgentError("输出文件名无效。")
+            from .inputs import module_name
+            if not isinstance(name,str) or not name.endswith('.py'):
+                raise AgentError("输出文件名无效。")
+            module_name(name[:-3])
         folder = self.directory(run_id)
         folder.mkdir(parents=True, exist_ok=True)
         temporary = None

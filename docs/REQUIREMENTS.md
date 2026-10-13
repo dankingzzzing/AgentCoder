@@ -15,7 +15,7 @@
 | 可扩展性（20%） | 角色接口、Agent 注册表、JSON 流程定义；测试真正加入并执行观察者节点 |
 | 文档（10%） | README、DESIGN、Desgin 入口、Mermaid 流程与架构图、验证记录 |
 | 源码仓库 | https://github.com/dankingzzzing/AgentCoder |
-| 小于 200 MB 的学号姓名备份包 | `scripts/package_submission.py` 生成 `artifacts/2412190104唐佳杰.zip`，排除真实凭据和内部运行数据 |
+| 小于 200 MB 的学号姓名备份包 | `scripts/package_submission.py --name 学号姓名` 在本机生成备份包，排除真实凭据和内部运行数据；个人信息不写入公开页面 |
 
 本轮新增可视化流程编排：模板、节点交接方向选择、JSON 导入、保存和启动前校验；支持迭代证据回放、完整交付 ZIP 与十场景自动验收。界面采用路由表编辑，没有拖拽。备份包可供用户提交到课程“002Homework2”，本工具没有该课程系统的访问接口。
 

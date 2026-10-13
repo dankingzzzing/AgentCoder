@@ -43,7 +43,8 @@ def make_report(state):
         lines.append(f"| {row['cycle']} | {row['issues']} | {row['tests']} | {row['tests_run'] if row['tests_run'] is not None else '未运行'} |")
     lines += ["", "## 代码版本与修复差异", ""]
     if not evidence["revisions"]:
-        lines.append("该历史记录未保存逐轮源码快照，不能重建先前代码；以下仅报告已保存的审查事实。")
+        lines.append("该历史记录未保存逐轮源码快照，不能重建先前代码；以下仅报告已保存的审查事实。" if state.artifacts else
+                     "编码节点尚未交付经过校验的模块，本次没有可提交的代码版本，也尚未进入审查与测试阶段。")
     for revision in evidence["revisions"]:
         lines += [f"### 版本 {revision['index']} · {revision['node']} · 修复轮次 {revision['cycle']}", "",
                   revision["summary"], "", f"交接消息：{revision['message_seq']}；代码 SHA-256：`{revision['code_sha256']}`。", ""]
@@ -70,12 +71,24 @@ def make_report(state):
             for finding in review["static"]["findings"]:
                 lines.append(f"- `solution.py:{finding['line']}`：{finding['title']}。{finding['detail']}")
     if state.error:
-        lines += ["", "## 错误与恢复", "", state.error, "", f"检查点停留在 `{state.phase}`，可修正配置后继续，已完成节点会保留。"]
+        lines += ["", "## 错误与恢复", "", state.error, "", f"错误分类：`{state.error_code or 'legacy_unspecified'}`。",
+                  f"检查点停留在 `{state.phase}`，可从当前节点重试；已完成交付保留。", ""]
+        if state.error_code.startswith("stream") or state.error_code in {"sse_format", "response_format", "http_transport"}:
+            lines.append("请检查服务连接，可使用自动兼容或普通响应模式，并调整空闲读取上限；网络问题无需重新填写已保存的密钥。")
+        elif not state.error_code:
+            lines.append("旧记录没有保存底层错误类型，无法仅凭本报告区分读取超时与格式错误；新请求会单独记录错误分类。")
+    if state.drafts:
+        lines += ["", "## 未提交草稿", "", "以下内容仅接收到了部分生成输出，没有提交为有效交付。", ""]
+        for name, text in state.drafts.items():
+            lines.append(f"- `{name}`：已接收 {len(text.encode())} 字节，未校验。")
     if state.status == "exhausted":
         reason = next((event["message"] for event in reversed(state.events) if event["kind"] == "limit"), "流程未获得最终通过结论。")
         lines += ["", "## 未解决问题", "", reason + "请查看最后一轮审查和测试输出。"]
-    lines += ["", "## 交付文件", "", "- `solution.py`：最新模块。", "- `test_solution.py`：原始回归测试。",
-              "- `state.json`：状态、消息和实际事件。", "- `report.md`：本报告。", "",
+    lines += ["", "## 交付文件", ""]
+    lines += [f"- `{name}`：{'最新模块' if name == 'solution.py' else '原始回归测试'}。" for name in state.artifacts]
+    if state.test_module != 'solution' and 'solution.py' in state.artifacts:
+        lines.append(f"- `{state.test_module}.py`：与 solution.py 同一实现，保留原始测试的导入模块名。")
+    lines += ["- `state.json`：状态、消息和实际事件。", "- `report.md`：本报告。", "",
               "- `evidence.json`：逐轮源码、代码差异、测试对比与验收指标。", "",
               "没有开启测试执行时，报告明确显示 not_run；模型建议与静态检查不能替代运行验证。"]
     # Normalize presentation whitespace; exact snapshots and patches remain in evidence.json.

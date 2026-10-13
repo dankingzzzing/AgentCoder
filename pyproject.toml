@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "homework2-agentcoder"
-version = "1.1.0"
+version = "1.2.0"
 description = "A three-agent coding, review and repair workflow with durable state and live progress."
 requires-python = ">=3.10"
 dependencies = []

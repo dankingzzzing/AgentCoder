@@ -50,7 +50,7 @@ def main() -> int:
         root.attributes("-topmost", True)
         options = {"parent": root, "initialdir": str(args.initial_dir)}
         if args.kind == "directory":
-            path = filedialog.askdirectory(title="选择需要审查的代码文件夹", mustexist=True, **options)
+            path = filedialog.askdirectory(title="选择本地工作目录", mustexist=True, **options)
         else:
             path = filedialog.askopenfilename(title="选择需要审查的代码文件", filetypes=[
                 ("代码和文本", "*.py *.js *.ts *.tsx *.jsx *.java *.go *.rs *.c *.cpp *.md *.txt"),

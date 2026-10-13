@@ -12,19 +12,16 @@ from concurrent.futures import ThreadPoolExecutor
 from .agents import CodingAgent, RepairAgent, ReviewAgent, DeliveryAudit
 from .evidence import build_evidence, record_revision
 from .analysis import analyze_source
-from .errors import AgentError
+from .errors import AgentError, Cancelled
 from .graph import validate_graph
 from .report import make_report
 from .state import RunStore, timestamp
 from .testing import execute_tests
+from .inputs import normalize_test_input
 
 
 def digest(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-class Cancelled(AgentError):
-    pass
 
 
 class AgentRegistry:
@@ -45,14 +42,17 @@ class AgentRegistry:
 
 class WorkflowRunner:
     def __init__(self, store: RunStore, *, provider=None, registry=None, test_timeout=10,
-                 on_event=None, cancelled=None):
+                 on_event=None, on_preview=None, cancelled=None):
         self.store, self.provider, self.test_timeout = store, provider, test_timeout
         self.registry = registry or (AgentRegistry().register("coding", CodingAgent(provider))
             .register("review", ReviewAgent(provider)).register("repair", RepairAgent(provider)).register("audit", DeliveryAudit()))
         self.on_event = on_event
+        self.on_preview = on_preview
         self.cancelled = cancelled or threading.Event()
         self.state = None
         self._last_activity = 0.0
+        self._last_preview = 0.0
+        self._last_progress = 0.0
 
     def check_cancelled(self):
         if self.cancelled.is_set():
@@ -71,12 +71,46 @@ class WorkflowRunner:
         self.check_cancelled()
         now = time.monotonic()
         if now - self._last_activity >= 5:
-            self.emit("activity", "模型服务正在响应，当前 Agent 正在处理任务。", agent=agent)
+            progress = self.state.progress
+            signals = progress.get("signals", 0)
+            self.emit("activity", f"等待当前 Agent 交付；已收到 {signals} 次响应信号，当前输出尚未提交。可随时停止。", agent=self.state.phase)
             self._last_activity = now
+
+    def model_progress(self, value, force=False):
+        self.check_cancelled()
+        if force:
+            self.state.drafts = {}
+            self.state.progress = {}
+            if self.on_preview:
+                self.on_preview({"agent":self.state.phase, "drafts":{}, "summary":"开始当前请求；此前未提交草稿仅作参考。"})
+        self.state.progress.update(value)
+        now = time.monotonic()
+        if force or now - self._last_progress >= 1:
+            self.emit("model_progress", "正在连接模型服务。" if value.get("stage") == "connecting" else
+                      f"模型正在处理请求；已收到 {value.get('signals', 0)} 次响应信号、{value.get('public_chars', 0)} 个公开交付字符。", agent=self.state.phase,
+                      data=self.state.progress.copy())
+            self._last_progress = now
+
+    def preview(self, values):
+        self.check_cancelled()
+        for field, name in (("solution", "solution.py"), ("tests", "test_solution.py")):
+            if field in values:
+                raw = values[field].encode("utf-8")[:65536]
+                self.state.drafts[name] = raw.decode("utf-8", errors="ignore")
+        if values.get("explanation") or values.get("summary"):
+            self.state.progress["summary"] = (values.get("explanation") or values.get("summary"))[:1000]
+        now = time.monotonic()
+        if now - self._last_preview >= 1:
+            self.store.save(self.state)
+            if self.on_preview:
+                self.on_preview({"agent": self.state.phase, "drafts": self.state.drafts.copy(), "summary": self.state.progress.get("summary", ""), "progress":self.state.progress.copy()})
+            self._last_preview = now
 
     def materialize(self):
         for name, text in self.state.artifacts.items():
             self.store.write(self.state.id, name, text)
+        if self.state.test_module != 'solution' and 'solution.py' in self.state.artifacts:
+            self.store.write(self.state.id,self.state.test_module+'.py',self.state.artifacts['solution.py'])
 
     def inspect(self, source, state):
         self.check_cancelled()
@@ -86,7 +120,7 @@ class WorkflowRunner:
         with ThreadPoolExecutor(max_workers=2) as pool:
             syntax = pool.submit(analyze_source, source, "solution.py")
             tests = pool.submit(execute_tests, self.store.directory(state.id),
-                                allowed=state.allow_exec, timeout=self.test_timeout)
+                                allowed=state.allow_exec, timeout=self.test_timeout, cancelled=self.cancelled)
             static, test_result = syntax.result(), tests.result()
         self.check_cancelled()
         self.emit("validation_result", f"静态候选 {len(static['findings'])} 项；测试状态 {test_result['status']}。",
@@ -94,6 +128,8 @@ class WorkflowRunner:
         return static, test_result
 
     def run(self, state):
+        if state.phase == state.graph.get('entry') and not state.artifacts:
+            normalize_test_input(state)
         state.validate()
         if state.status in {"completed", "exhausted"}:
             return state
@@ -105,10 +141,12 @@ class WorkflowRunner:
             self.registry.get(node["agent"])
         if state.artifacts and not state.revisions:
             record_revision(state, state.phase, "旧检查点的当前代码；此前版本未保存。", origin="legacy_checkpoint")
-        state.status, state.error = "running", ""
-        self.emit("workflow_start", "工作流已开始，从当前检查点继续。", data={"id": state.id, "phase": state.phase})
+        state.status, state.error, state.error_code = "running", "", ""
         visits = 0
         try:
+            self.emit("workflow_start", "工作流已开始，从当前检查点继续。", data={"id": state.id, "phase": state.phase})
+            if state.initial_tests and not state.artifacts:
+                self.emit("input_detected", f"识别到用户回归测试，生成 {state.test_module} 对应实现；原始测试将冻结不修改。")
             while state.phase != "done":
                 self.check_cancelled()
                 if visits >= 40:
@@ -119,6 +157,8 @@ class WorkflowRunner:
                 node_id = state.phase
                 node = mapping[node_id]
                 state.nodes[node_id] = "running"
+                state.progress = {}
+                state.drafts = {}
                 self.emit("node_start", f"{node_id} Agent 开始执行。", agent=node_id)
                 observed = copy.deepcopy(state) if node["kind"] == "observer" else state
                 observation_before = observed.public() if node["kind"] == "observer" else None
@@ -179,6 +219,7 @@ class WorkflowRunner:
             if state.phase != "done":
                 state.status = "cancelled"
                 state.error = "客户端连接已关闭，检查点已保存。"
+                state.error_code = "cancelled"
                 if state.phase in state.nodes:
                     state.nodes[state.phase] = "pending"
             self.store.save(state)
@@ -189,9 +230,10 @@ class WorkflowRunner:
             state.status = "cancelled" if isinstance(exc, Cancelled) else "failed"
             key = getattr(getattr(self.provider, "config", None), "api_key", "")
             state.error = str(exc).replace(key, "[已隐藏密钥]") if key else str(exc)
+            state.error_code = "cancelled" if isinstance(exc, Cancelled) else getattr(exc, "code", "node_error")
             if state.phase in state.nodes:
-                state.nodes[state.phase] = "failed"
-            self.emit("workflow_error", state.error, agent=state.phase)
+                state.nodes[state.phase] = "pending" if isinstance(exc, Cancelled) else "failed"
+            self.emit("workflow_cancelled" if isinstance(exc, Cancelled) else "workflow_error", state.error, agent=state.phase, data={"error_code": state.error_code})
         self.store.save(state)
         self.store.write(state.id, "report.md", make_report(state))
         self.store.write(state.id, "evidence.json", json.dumps(build_evidence(state), ensure_ascii=False, indent=2))

@@ -91,7 +91,7 @@ class SettingsStore:
                 raise ValueError("unknown protection")
             values = document["config"]
             allowed = set(Config.__dataclass_fields__) - {"api_key"}
-            if not isinstance(values, dict) or set(values) != allowed:
+            if not isinstance(values, dict) or set(values) - allowed or not (allowed - {"stream_idle_timeout", "stream_mode"}) <= set(values):
                 raise ValueError("invalid config fields")
             config = Config(api_key=raw.decode("utf-8"), **values)
             config = config.with_web_settings({})

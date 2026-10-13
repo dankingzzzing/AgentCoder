@@ -139,3 +139,48 @@ class WebTests(unittest.TestCase):
             with ZipFile(io.BytesIO(response.read())) as archive:
                 self.assertEqual(json.loads(archive.read("state.json"))["id"],final["state"]["id"])
                 self.assertNotIn(".env",archive.namelist())
+
+    def test_workspace_creation_output_location_and_old_history_after_switch(self):
+        chosen=self.root/'local-code';chosen.mkdir()
+        value=self.post('/api/workspaces/select',{'path':str(chosen)})
+        source=self.post('/api/workspaces/create-file',{'workspace_id':value['id'],'name':'我的代码.py','content':'value=1\n'})
+        self.assertEqual(source['path'],str(chosen/'我的代码.py'))
+        with self.assertRaises(HTTPError):self.post('/api/workspaces/create-file',{'workspace_id':value['id'],'name':'我的代码.py','content':'overwrite'})
+        self.post('/api/settings',{'demo':True,'remember':True})
+        with urlopen(self.request('/api/run',{'workspace_id':value['id'],'allow_exec':True}),timeout=5) as response:
+            final=[json.loads(line) for line in response][-1]['data']
+        run_id=final['state']['id']
+        self.assertEqual(final['state']['workdir'],str(chosen))
+        self.assertTrue((chosen/'.agentcoder/runs'/run_id/'solution.py').exists())
+        self.assertEqual((chosen/'我的代码.py').read_text(encoding='utf-8'),'value=1\n')
+        self.post('/api/workspaces/select',{'path':str(self.root)})
+        self.stop();self.start()
+        self.assertEqual(self.get('/api/runs/'+run_id)['state']['status'],'completed')
+        self.assertEqual(self.get('/api/history')['runs'][0]['workdir'],str(chosen))
+
+    def test_native_directory_selection_and_cancel_do_not_change_current_directory(self):
+        chosen=self.root/'native-choice';chosen.mkdir()
+        with patch('agentcoder.web.pick_local_path',return_value=str(chosen)) as picker:
+            selected=self.post('/api/workspaces/pick',{})
+            self.assertEqual(picker.call_args.args[0],'directory')
+        with patch('agentcoder.web.pick_local_path',return_value=None):
+            self.assertTrue(self.post('/api/workspaces/pick',{})['cancelled'])
+        self.assertEqual(self.get('/api/workspaces')['id'],selected['id'])
+
+    def test_workspace_path_traversal_is_rejected_and_page_contains_no_personal_footer(self):
+        current=self.get('/api/workspaces')
+        with self.assertRaises(HTTPError):self.post('/api/workspaces/create-file',{'workspace_id':current['id'],'name':'../escaped.py','content':'x=1'})
+        self.assertFalse((self.root.parent/'escaped.py').exists())
+        with urlopen(self.base+'/',timeout=5) as response:html=response.read().decode()
+        self.assertIn('<footer><span>AgentCoder</span>',html)
+
+    def test_legacy_settings_restore_with_new_network_defaults(self):
+        with patch('agentcoder.web.LLMProvider.check_connection',return_value={}):
+            self.post('/api/settings',{'api_key':'test-key','model':'test','base_url':'https://example.com/v1','remember':True})
+        path=self.root/'.agentcoder/web-settings.json'
+        saved=json.loads(path.read_text(encoding='utf-8'));saved['config'].pop('stream_mode');saved['config'].pop('stream_idle_timeout')
+        path.write_text(json.dumps(saved),encoding='utf-8')
+        self.stop();self.start()
+        self.assertTrue(self.config['configured'])
+        self.assertEqual(self.config['stream_mode'],'auto')
+        self.assertEqual(self.config['stream_idle_timeout'],120)

@@ -23,6 +23,7 @@ from .report import make_report
 from .settings_store import SettingsStore
 from .state import RunStore, WorkflowState
 from .workflow import WorkflowRunner
+from .workspaces import Workspaces
 
 
 STATIC = Path(__file__).parent / "static"
@@ -49,6 +50,7 @@ def create_server(root: Path, *, port=8767, config_file=None):
         mode = "demo" if is_demo else "llm"
     token = secrets.token_urlsafe(32)
     store = RunStore(root)
+    workspaces = Workspaces(root)
     graph_store = GraphStore(root)
     graph_error = ""
     try:
@@ -85,15 +87,18 @@ def create_server(root: Path, *, port=8767, config_file=None):
                 return self.send(200, {"csrf_token": token, "configured": configured, "remembered": remembered,
                     "mode": mode, "api_key_configured": bool(config.api_key), "model": config.model,
                     "base_url": config.base_url, "api_style": config.api_style, "demo_task": demo.TASK,
+                    "stream_mode": config.stream_mode, "stream_idle_timeout": config.stream_idle_timeout,
                     "demo_cases": catalog(),
                     "bootstrap_error": bootstrap_error})
+            if self.path == "/api/workspaces":
+                return self.send(200, workspaces.public())
             if self.path == "/api/graph":
                 with lock:
                     graph = copy.deepcopy(selected_graph)
                 return self.send(200, {"graph": graph, "error": graph_error,
                     "presets": {"standard": default_graph(), "audited": audited_graph()}, "bindings": BUILTIN_KINDS})
             if self.path == "/api/history":
-                rows = store.history()
+                rows = workspaces.history()
                 with lock:
                     for row in rows:
                         row["active"] = row["id"] in active
@@ -104,7 +109,7 @@ def create_server(root: Path, *, port=8767, config_file=None):
                     bundle = run_id.endswith("/bundle")
                     if bundle:
                         run_id = run_id.removesuffix("/bundle")
-                    state = store.load(run_id)
+                    state = workspaces.locate_run(run_id).load(run_id)
                     with lock:
                         running = run_id in active
                     if bundle:
@@ -117,6 +122,7 @@ def create_server(root: Path, *, port=8767, config_file=None):
                     return self.send(404, {"error": str(exc)})
             routes = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                       "/studio.js": ("studio.js", "text/javascript; charset=utf-8"),
+                      "/workspace.js": ("workspace.js", "text/javascript; charset=utf-8"),
                       "/markdown.js": ("markdown.js", "text/javascript; charset=utf-8"), "/style.css": ("style.css", "text/css; charset=utf-8")}
             if self.path not in routes:
                 return self.send(404, {"error": "页面不存在。"})
@@ -125,12 +131,12 @@ def create_server(root: Path, *, port=8767, config_file=None):
 
         def apply_settings(self, payload):
             nonlocal config, configured, mode, remembered
-            if set(payload) - {"api_key", "model", "base_url", "api_style", "demo", "remember"}:
+            if set(payload) - {"api_key", "model", "base_url", "api_style", "stream_mode", "stream_idle_timeout", "demo", "remember"}:
                 raise AgentError("模型设置字段无效。")
             is_demo, remember = payload.get("demo", False), payload.get("remember", True)
             if type(is_demo) is not bool or type(remember) is not bool:
                 raise AgentError("模型模式参数无效。")
-            candidate = config.with_web_settings({k: v for k, v in payload.items() if k in {"api_key", "model", "base_url", "api_style"}})
+            candidate = config.with_web_settings({k: v for k, v in payload.items() if k in {"api_key", "model", "base_url", "api_style", "stream_mode", "stream_idle_timeout"}})
             if not is_demo:
                 LLMProvider(candidate).check_connection()
             if remember:
@@ -142,6 +148,7 @@ def create_server(root: Path, *, port=8767, config_file=None):
                 mode = "demo" if is_demo else "llm"
             return {"configured": True, "remembered": remember, "mode": mode,
                     "api_key_configured": bool(config.api_key), "model": config.model,
+                    "stream_mode": config.stream_mode, "stream_idle_timeout": config.stream_idle_timeout,
                     "base_url": config.base_url, "api_style": config.api_style}
 
         def execute(self, payload, resume=False):
@@ -150,11 +157,12 @@ def create_server(root: Path, *, port=8767, config_file=None):
             if resume:
                 if set(payload) != {"id"}:
                     raise AgentError("恢复请求必须只包含运行 ID。")
-                state = store.load(payload["id"])
+                run_store = workspaces.locate_run(payload["id"])
+                state = run_store.load(payload["id"])
                 if state.status in {"completed", "exhausted"}:
                     raise AgentError("该流程已结束，请创建新运行。")
             else:
-                if set(payload) - {"task", "initial_source", "max_cycles", "allow_exec", "scenario", "example", "graph"}:
+                if set(payload) - {"task", "initial_source", "max_cycles", "allow_exec", "scenario", "example", "graph", "workspace_id"}:
                     raise AgentError("工作流请求字段无效。")
                 task = payload.get("task", demo.TASK)
                 case = get_case(payload.get("example", "contracts"))
@@ -163,9 +171,10 @@ def create_server(root: Path, *, port=8767, config_file=None):
                 with lock:
                     chosen_graph = copy.deepcopy(payload.get("graph", selected_graph))
                 validate_graph(chosen_graph, bindings=BUILTIN_KINDS)
+                run_store = RunStore(workspaces.get(payload.get("workspace_id")))
                 state = WorkflowState.create(task, mode, initial_source=payload.get("initial_source", ""),
                     allow_exec=payload.get("allow_exec", False), max_cycles=payload.get("max_cycles", 3),
-                    scenario=payload.get("scenario", "buggy"), example=case.id, graph=chosen_graph)
+                    scenario=payload.get("scenario", "buggy"), example=case.id, graph=chosen_graph, workdir=str(run_store.root))
             provider = LLMProvider(config) if state.mode == "llm" else None
             cancelled = threading.Event()
             with lock:
@@ -173,7 +182,7 @@ def create_server(root: Path, *, port=8767, config_file=None):
                     return self.send(409, {"error": "该工作流正在执行，或已达到并发上限。"})
                 active[state.id] = cancelled
             try:
-                store.save(state)
+                run_store.save(state)
                 self.send_response(200)
                 self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")
@@ -185,11 +194,19 @@ def create_server(root: Path, *, port=8767, config_file=None):
                     self.wfile.write((json.dumps({"type": kind, "data": data}, ensure_ascii=False)+"\n").encode())
                     self.wfile.flush()
                 frame("run", state.public())
-                runner = WorkflowRunner(store, provider=provider, test_timeout=config.test_timeout,
-                                        on_event=lambda event: frame("event", event), cancelled=cancelled)
+                runner = WorkflowRunner(run_store, provider=provider, test_timeout=config.test_timeout,
+                                        on_event=lambda event: frame("event", event), on_preview=lambda value: frame("preview", value), cancelled=cancelled)
                 result = runner.run(state)
                 frame("result", {"state": result.public(), "report": make_report(result), "evidence": build_evidence(result)})
             except (BrokenPipeError, ConnectionResetError):
+                cancelled.set()
+                if state.status in {"created", "running"}:
+                    state.status, state.error, state.error_code = "cancelled", "客户端已停止接收，检查点已保留。", "cancelled"
+                    if state.phase in state.nodes:
+                        state.nodes[state.phase] = "pending"
+                    run_store.save(state)
+                    run_store.write(state.id, "report.md", make_report(state))
+                    run_store.write(state.id, "evidence.json", json.dumps(build_evidence(state),ensure_ascii=False,indent=2))
                 return
             finally:
                 with lock:
@@ -217,6 +234,26 @@ def create_server(root: Path, *, port=8767, config_file=None):
                     raise AgentError("请求必须是 JSON 对象。")
                 if self.path == "/api/settings":
                     return self.send(200, self.apply_settings(value))
+                if self.path in {"/api/workspaces/select", "/api/workspaces/pick"}:
+                    if self.path.endswith("/pick"):
+                        if not picker_lock.acquire(blocking=False):
+                            return self.send(409, {"error":"文件选择窗口已打开。"})
+                        try:
+                            path = pick_local_path("directory", workspaces.get())
+                        finally:
+                            picker_lock.release()
+                        if path is None:
+                            return self.send(200, {"cancelled":True})
+                    else:
+                        if set(value) != {"path"}:
+                            raise AgentError("目录选择请求只能包含 path。")
+                        path = value["path"]
+                    return self.send(200, {**workspaces.select(path), "cancelled":False})
+                if self.path == "/api/workspaces/create-file":
+                    if set(value) != {"workspace_id", "name", "content"}:
+                        raise AgentError("新文件请求字段无效。")
+                    result = workspaces.create_file(value["workspace_id"], value["name"], value["content"])
+                    return self.send(200, {**result, "workspace":workspaces.public()})
                 if self.path in {"/api/graph", "/api/graph/validate"}:
                     if set(value) != {"graph"}:
                         raise AgentError("编排请求只能包含 graph。")

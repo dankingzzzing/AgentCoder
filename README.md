@@ -6,6 +6,8 @@
 
 本轮亮点：网页编排并校验交接路由、逐轮源码与修复差异回放、实际测试门禁、冻结测试哈希、可复现交付包，以及十个工作流验收场景。评审演示入口见 [答辩说明](docs/DEFENSE.md)。
 
+网页现支持选择本地工作目录、新建 Python 文件、公开处理进度与生成草稿，并可以停止网络等待和测试子进程。网络连接不稳定时，会有限重试当前节点，并在自动兼容模式下尝试普通响应。网页和公开提交版本不显示姓名、学号。
+
 ## 快速运行
 
 需要 Python 3.10 或以上，应用仅使用标准库，不需要模型 SDK、LangChain 或 Web 框架。从项目根目录运行：
@@ -54,6 +56,10 @@ flowchart LR
 **离线演示是明确标注的三个规则 Agent，不调用 LLM，只支持固定教学样例。** 真实模式由三个独立提示的模型 Agent 协作；它们可以使用同一个模型和 API Key，不需要购买三个模型账号。
 
 ## 配置真实模型
+
+网页“网络兼容与等待设置”可选择自动兼容、只使用流式或普通响应，并调整连续无数据的等待上限。公开处理步骤和响应信号会实时更新；出现工具输出后可展开“生成中的代码与测试”。点击“停止运行”会中断本机网络等待和测试；未完成草稿不作为正式交付。具体边界见 [可靠性说明](docs/RELIABILITY.md)。
+
+“本地工作目录”支持本机文件夹选择、路径输入与刷新恢复；“新建 Python 代码文件”允许填写文件名和代码内容，同名文件拒绝覆盖。输出和历史保存在该目录的 `.agentcoder/runs/`。已有模块保持只读；纯 unittest 输入会识别为冻结测试，生成其导入模块的实现。选择目录不会自动扫描整个多文件工程。
 
 网页点击“模型设置”，输入 API Key、支持工具调用的模型名和服务地址，点击“验证并进入”。验证会检查真实工具调用与结果回传。第三方兼容服务默认使用 Chat Completions；OpenAI 官方地址默认使用 Responses，也可手动选择。
 
@@ -128,6 +134,7 @@ python -m unittest discover -s tests -v
 python -m unittest discover -s examples/fixed -v
 python -m agentcoder evaluate --output artifacts/evaluation.json
 python scripts/package_submission.py
+python scripts/package_submission.py --name "学号姓名"
 ```
 
 含缺陷示例的测试失败是预期输入，用于验证审查和修复；修复后的八个回归测试应通过。GitHub Actions 检查 Linux/Windows × Python 3.10/3.13，覆盖流程、消息、恢复、条件分支、扩展节点与接口协议。

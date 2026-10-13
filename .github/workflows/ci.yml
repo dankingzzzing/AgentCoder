@@ -25,7 +25,7 @@ jobs:
       - name: Fixed example regression tests
         run: python -m unittest discover -s examples/fixed -v
       - name: Frontend JavaScript syntax
-        run: node -e "for (const f of ['app.js','studio.js','markdown.js']) require('node:child_process').execFileSync(process.execPath,['--check','agentcoder/static/'+f],{stdio:'inherit'});"
+        run: node -e "for (const f of ['app.js','studio.js','workspace.js','markdown.js']) require('node:child_process').execFileSync(process.execPath,['--check','agentcoder/static/'+f],{stdio:'inherit'});"
       - name: Full three-agent demo
         run: python -m agentcoder demo --json --output artifacts/demo.json
       - name: Direct approval branch

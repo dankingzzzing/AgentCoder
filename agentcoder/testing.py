@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 
-def execute_tests(directory: Path, *, allowed=False, timeout=10) -> dict:
+def execute_tests(directory: Path, *, allowed=False, timeout=10, cancelled=None) -> dict:
     if not allowed:
         return {"status": "not_run", "passed": None, "tests_run": None, "output": "未开启测试执行。", "exit_code": None}
     environment = {k: v for k, v in os.environ.items() if k.upper() in {
@@ -24,7 +24,9 @@ def execute_tests(directory: Path, *, allowed=False, timeout=10) -> dict:
                                    cwd=directory, env=environment, stdout=output, stderr=subprocess.STDOUT,
                                    stdin=subprocess.DEVNULL, start_new_session=os.name != "nt")
         while process.poll() is None:
-            if time.monotonic() - started > timeout:
+            if cancelled and cancelled.is_set():
+                reason = "cancelled"
+            elif time.monotonic() - started > timeout:
                 reason = "timeout"
             elif output.tell() > 65536:
                 reason = "output_limit"
