@@ -17,7 +17,7 @@ from agentcoder.web import create_server
 class WebTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory()
-        self.root=Path(self.temp.name)
+        self.root=Path(self.temp.name).resolve()
         self.start()
     def start(self):
         with patch.dict("os.environ",{},clear=True):
