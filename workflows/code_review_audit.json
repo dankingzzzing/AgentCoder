@@ -1,0 +1,10 @@
+{
+  "name": "编码 → 审查 → 修复 → 交付验收",
+  "entry": "coding",
+  "nodes": [
+    {"id": "coding", "agent": "coding", "kind": "code", "next": "review"},
+    {"id": "review", "agent": "review", "kind": "review", "next": "delivery", "revise": "repair"},
+    {"id": "repair", "agent": "repair", "kind": "repair", "next": "review"},
+    {"id": "delivery", "agent": "audit", "kind": "observer", "next": "done"}
+  ]
+}

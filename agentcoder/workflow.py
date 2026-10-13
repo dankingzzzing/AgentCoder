@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import copy
+import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from .agents import CodingAgent, RepairAgent, ReviewAgent
+from .agents import CodingAgent, RepairAgent, ReviewAgent, DeliveryAudit
+from .evidence import build_evidence, record_revision
 from .analysis import analyze_source
 from .errors import AgentError
 from .graph import validate_graph
@@ -45,7 +48,7 @@ class WorkflowRunner:
                  on_event=None, cancelled=None):
         self.store, self.provider, self.test_timeout = store, provider, test_timeout
         self.registry = registry or (AgentRegistry().register("coding", CodingAgent(provider))
-            .register("review", ReviewAgent(provider)).register("repair", RepairAgent(provider)))
+            .register("review", ReviewAgent(provider)).register("repair", RepairAgent(provider)).register("audit", DeliveryAudit()))
         self.on_event = on_event
         self.cancelled = cancelled or threading.Event()
         self.state = None
@@ -98,6 +101,10 @@ class WorkflowRunner:
             raise AgentError("真实模式需要已配置的模型。")
         self.state = state
         mapping = validate_graph(state.graph)
+        for node in mapping.values():
+            self.registry.get(node["agent"])
+        if state.artifacts and not state.revisions:
+            record_revision(state, state.phase, "旧检查点的当前代码；此前版本未保存。", origin="legacy_checkpoint")
         state.status, state.error = "running", ""
         self.emit("workflow_start", "工作流已开始，从当前检查点继续。", data={"id": state.id, "phase": state.phase})
         visits = 0
@@ -113,7 +120,11 @@ class WorkflowRunner:
                 node = mapping[node_id]
                 state.nodes[node_id] = "running"
                 self.emit("node_start", f"{node_id} Agent 开始执行。", agent=node_id)
-                result = self.registry.get(node["agent"]).run(state, self)
+                observed = copy.deepcopy(state) if node["kind"] == "observer" else state
+                observation_before = observed.public() if node["kind"] == "observer" else None
+                result = self.registry.get(node["agent"]).run(observed, self)
+                if node["kind"] == "observer" and observed.public() != observation_before:
+                    raise AgentError("观察节点只能读取状态，不能修改代码、测试或流程。")
                 self.check_cancelled()
                 if node["kind"] == "code":
                     state.artifacts = {"solution.py": result["solution"], "test_solution.py": result["tests"]}
@@ -121,8 +132,13 @@ class WorkflowRunner:
                     state.message(node_id, node["next"], "code_ready", {
                         "files": list(state.artifacts), "code_sha256": digest(result["solution"]),
                         "tests_sha256": digest(state.baseline_tests), "summary": result["explanation"]})
+                    record_revision(state, node_id, result["explanation"])
                     next_phase = node["next"]
                 elif node["kind"] == "review":
+                    if not result["static"]["syntax_ok"] or result["tests"]["passed"] is False or result["issues"]:
+                        result["approved"] = False
+                    result["revision"] = state.revisions[-1]["index"]
+                    result["code_sha256"] = digest(state.artifacts["solution.py"])
                     state.reviews.append(result)
                     next_phase = node["next"] if result["approved"] else node["revise"]
                     state.message(node_id, next_phase, "review_result", {
@@ -133,7 +149,8 @@ class WorkflowRunner:
                     if not result["approved"] and (state.cycle >= state.max_cycles or next_phase == "done"):
                         state.status = "exhausted"
                         state.nodes[node_id] = "completed"
-                        self.emit("limit", "达到修复轮次上限，保留未解决问题。", agent=node_id)
+                        self.emit("limit", "未配置修复分支，保留未解决问题。" if next_phase == "done" else
+                                  "达到修复轮次上限，保留未解决问题。", agent=node_id)
                         break
                 elif node["kind"] == "repair":
                     before = digest(state.artifacts["solution.py"])
@@ -142,6 +159,7 @@ class WorkflowRunner:
                     state.message(node_id, node["next"], "repair_ready", {
                         "summary": result["explanation"], "previous_code_sha256": before,
                         "code_sha256": digest(result["solution"]), "tests_sha256": digest(state.baseline_tests)})
+                    record_revision(state, node_id, result["explanation"])
                     next_phase = node["next"]
                 else:
                     state.message(node_id, node["next"], "observation", result)
@@ -158,10 +176,14 @@ class WorkflowRunner:
                         state.nodes[name] = "skipped"
                 self.emit("workflow_done", "流程完成：代码、审查证据与交付报告已生成。", data={"nodes": state.nodes.copy()})
         except (BrokenPipeError, ConnectionResetError):
-            state.status = "cancelled"
-            state.error = "客户端连接已关闭，检查点已保存。"
-            state.nodes[state.phase] = "pending"
+            if state.phase != "done":
+                state.status = "cancelled"
+                state.error = "客户端连接已关闭，检查点已保存。"
+                if state.phase in state.nodes:
+                    state.nodes[state.phase] = "pending"
             self.store.save(state)
+            self.store.write(state.id, "report.md", make_report(state))
+            self.store.write(state.id, "evidence.json", json.dumps(build_evidence(state), ensure_ascii=False, indent=2))
             raise
         except Exception as exc:
             state.status = "cancelled" if isinstance(exc, Cancelled) else "failed"
@@ -172,4 +194,5 @@ class WorkflowRunner:
             self.emit("workflow_error", state.error, agent=state.phase)
         self.store.save(state)
         self.store.write(state.id, "report.md", make_report(state))
+        self.store.write(state.id, "evidence.json", json.dumps(build_evidence(state), ensure_ascii=False, indent=2))
         return state

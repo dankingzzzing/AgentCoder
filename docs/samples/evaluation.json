@@ -1,0 +1,309 @@
+{
+  "mode": "offline_workflow_acceptance",
+  "description": "规则 Agent + 真实 unittest；衡量编排行为，不代表 LLM 缺陷检测能力。",
+  "cases": [
+    {
+      "id": "contracts_repair",
+      "title": "契约缺陷 → 修复",
+      "example": "contracts",
+      "expected": "verified",
+      "passed": true,
+      "run_id": "b74b976c609b4220936c152a3037703b",
+      "status": "completed",
+      "acceptance": "verified",
+      "repairs": 1,
+      "reviews": [
+        {
+          "cycle": 0,
+          "issues": 4,
+          "tests": "failed",
+          "tests_run": 8
+        },
+        {
+          "cycle": 1,
+          "issues": 0,
+          "tests": "passed",
+          "tests_run": 8
+        }
+      ],
+      "tests_frozen": true,
+      "revisions": 2,
+      "messages": 4,
+      "recovered_without_recoding": false,
+      "seconds": 0.264
+    },
+    {
+      "id": "prices_repair",
+      "title": "金额精度 → 修复",
+      "example": "prices",
+      "expected": "verified",
+      "passed": true,
+      "run_id": "ec65592410f1455f9092fdf108025df6",
+      "status": "completed",
+      "acceptance": "verified",
+      "repairs": 1,
+      "reviews": [
+        {
+          "cycle": 0,
+          "issues": 2,
+          "tests": "failed",
+          "tests_run": 8
+        },
+        {
+          "cycle": 1,
+          "issues": 0,
+          "tests": "passed",
+          "tests_run": 8
+        }
+      ],
+      "tests_frozen": true,
+      "revisions": 2,
+      "messages": 4,
+      "recovered_without_recoding": false,
+      "seconds": 0.212
+    },
+    {
+      "id": "words_repair",
+      "title": "分词排序 → 修复",
+      "example": "words",
+      "expected": "verified",
+      "passed": true,
+      "run_id": "164eb252319d4a5f834c4571370c2d1e",
+      "status": "completed",
+      "acceptance": "verified",
+      "repairs": 1,
+      "reviews": [
+        {
+          "cycle": 0,
+          "issues": 2,
+          "tests": "failed",
+          "tests_run": 8
+        },
+        {
+          "cycle": 1,
+          "issues": 0,
+          "tests": "passed",
+          "tests_run": 8
+        }
+      ],
+      "tests_frozen": true,
+      "revisions": 2,
+      "messages": 4,
+      "recovered_without_recoding": false,
+      "seconds": 0.218
+    },
+    {
+      "id": "clean_approval",
+      "title": "正确代码 → 直接交付",
+      "example": "contracts",
+      "expected": "verified",
+      "passed": true,
+      "run_id": "5e0c53a926fe43e09283e242a9942938",
+      "status": "completed",
+      "acceptance": "verified",
+      "repairs": 0,
+      "reviews": [
+        {
+          "cycle": 0,
+          "issues": 0,
+          "tests": "passed",
+          "tests_run": 8
+        }
+      ],
+      "tests_frozen": true,
+      "revisions": 1,
+      "messages": 2,
+      "recovered_without_recoding": false,
+      "seconds": 0.108
+    },
+    {
+      "id": "two_repairs",
+      "title": "无效首修 → 第二次修复",
+      "example": "contracts",
+      "expected": "verified",
+      "passed": true,
+      "run_id": "a1d1235d64184948b72a16c7966883a1",
+      "status": "completed",
+      "acceptance": "verified",
+      "repairs": 2,
+      "reviews": [
+        {
+          "cycle": 0,
+          "issues": 4,
+          "tests": "failed",
+          "tests_run": 8
+        },
+        {
+          "cycle": 1,
+          "issues": 4,
+          "tests": "failed",
+          "tests_run": 8
+        },
+        {
+          "cycle": 2,
+          "issues": 0,
+          "tests": "passed",
+          "tests_run": 8
+        }
+      ],
+      "tests_frozen": true,
+      "revisions": 3,
+      "messages": 6,
+      "recovered_without_recoding": false,
+      "seconds": 0.344
+    },
+    {
+      "id": "test_gate",
+      "title": "错误批准 → 实测否决",
+      "example": "contracts",
+      "expected": "verified",
+      "passed": true,
+      "run_id": "46a17065c5504f12bb48f3132842f0db",
+      "status": "completed",
+      "acceptance": "verified",
+      "repairs": 1,
+      "reviews": [
+        {
+          "cycle": 0,
+          "issues": 0,
+          "tests": "failed",
+          "tests_run": 8
+        },
+        {
+          "cycle": 1,
+          "issues": 0,
+          "tests": "passed",
+          "tests_run": 8
+        }
+      ],
+      "tests_frozen": true,
+      "revisions": 2,
+      "messages": 4,
+      "recovered_without_recoding": false,
+      "seconds": 0.217
+    },
+    {
+      "id": "repair_budget",
+      "title": "无效修复 → 预算终止",
+      "example": "contracts",
+      "expected": "exhausted",
+      "passed": true,
+      "run_id": "dd56419756cd47a28de086e545c9317a",
+      "status": "exhausted",
+      "acceptance": "unfinished",
+      "repairs": 2,
+      "reviews": [
+        {
+          "cycle": 0,
+          "issues": 4,
+          "tests": "failed",
+          "tests_run": 8
+        },
+        {
+          "cycle": 1,
+          "issues": 4,
+          "tests": "failed",
+          "tests_run": 8
+        },
+        {
+          "cycle": 2,
+          "issues": 4,
+          "tests": "failed",
+          "tests_run": 8
+        }
+      ],
+      "tests_frozen": true,
+      "revisions": 3,
+      "messages": 6,
+      "recovered_without_recoding": false,
+      "seconds": 0.316
+    },
+    {
+      "id": "checkpoint_resume",
+      "title": "审查中断 → 检查点恢复",
+      "example": "contracts",
+      "expected": "verified",
+      "passed": true,
+      "run_id": "1d095bd42123490786bbf9038a859f46",
+      "status": "completed",
+      "acceptance": "verified",
+      "repairs": 1,
+      "reviews": [
+        {
+          "cycle": 0,
+          "issues": 4,
+          "tests": "failed",
+          "tests_run": 8
+        },
+        {
+          "cycle": 1,
+          "issues": 0,
+          "tests": "passed",
+          "tests_run": 8
+        }
+      ],
+      "tests_frozen": true,
+      "revisions": 2,
+      "messages": 4,
+      "recovered_without_recoding": true,
+      "seconds": 0.223
+    },
+    {
+      "id": "static_only",
+      "title": "未运行测试 → 不宣称验收",
+      "example": "contracts",
+      "expected": "unverified",
+      "passed": true,
+      "run_id": "6598f63a39ee4d99963c1be43d8d7d17",
+      "status": "completed",
+      "acceptance": "unverified",
+      "repairs": 0,
+      "reviews": [
+        {
+          "cycle": 0,
+          "issues": 0,
+          "tests": "not_run",
+          "tests_run": null
+        }
+      ],
+      "tests_frozen": true,
+      "revisions": 1,
+      "messages": 2,
+      "recovered_without_recoding": false,
+      "seconds": 0.023
+    },
+    {
+      "id": "extension_node",
+      "title": "新增交付验收规则节点",
+      "example": "words",
+      "expected": "verified",
+      "passed": true,
+      "run_id": "0082a8d87de94b9ead0a0664b58c5aa3",
+      "status": "completed",
+      "acceptance": "verified",
+      "repairs": 1,
+      "reviews": [
+        {
+          "cycle": 0,
+          "issues": 2,
+          "tests": "failed",
+          "tests_run": 8
+        },
+        {
+          "cycle": 1,
+          "issues": 0,
+          "tests": "passed",
+          "tests_run": 8
+        }
+      ],
+      "tests_frozen": true,
+      "revisions": 2,
+      "messages": 5,
+      "recovered_without_recoding": false,
+      "seconds": 0.217
+    }
+  ],
+  "passed": 10,
+  "total": 10,
+  "all_passed": true
+}

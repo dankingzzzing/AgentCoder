@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import tempfile
@@ -27,6 +28,7 @@ class WorkflowState:
     max_cycles: int = 3
     allow_exec: bool = False
     scenario: str = "buggy"
+    example: str = "contracts"
     initial_source: str = ""
     graph: dict = field(default_factory=default_graph)
     status: str = "created"
@@ -36,6 +38,7 @@ class WorkflowState:
     artifacts: dict = field(default_factory=dict)
     baseline_tests: str = ""
     reviews: list = field(default_factory=list)
+    revisions: list = field(default_factory=list)
     messages: list = field(default_factory=list)
     events: list = field(default_factory=list)
     error: str = ""
@@ -56,6 +59,8 @@ class WorkflowState:
         return state
 
     def validate(self):
+        from .fixtures import get_case
+        get_case(self.example)
         graph_nodes = validate_graph(self.graph)
         if (not isinstance(self.id, str) or not re.fullmatch(r"[a-f0-9]{32}", self.id)
                 or self.version != 1 or self.mode not in {"demo", "llm"}
@@ -72,10 +77,24 @@ class WorkflowState:
                 or not isinstance(self.artifacts, dict) or set(self.artifacts) - {"solution.py", "test_solution.py"}
                 or any(not isinstance(v, str) or len(v.encode()) > 65536 for v in self.artifacts.values())
                 or not isinstance(self.baseline_tests, str)
-                or not all(isinstance(v, list) for v in (self.reviews, self.messages, self.events))):
+                or not all(isinstance(v, list) for v in (self.reviews, self.revisions, self.messages, self.events))):
             raise AgentError("工作流数据格式无效。")
         if self.baseline_tests and self.artifacts.get("test_solution.py") != self.baseline_tests:
             raise AgentError("原始测试被修改，不能继续工作流。")
+        if len(self.revisions) > self.max_cycles + 1:
+            raise AgentError("代码快照数量超过修复预算。")
+        for index, revision in enumerate(self.revisions):
+            if (not isinstance(revision, dict) or type(revision.get("index")) is not int or revision["index"] != index
+                    or type(revision.get("cycle")) is not int or not 0 <= revision["cycle"] <= self.cycle
+                    or revision.get("node") not in graph_nodes or revision.get("origin") not in {"agent", "legacy_checkpoint"}
+                    or not isinstance(revision.get("source"), str) or len(revision["source"].encode()) > 65536
+                    or any(not isinstance(revision.get(k), str) for k in ("summary", "time"))
+                    or type(revision.get("message_seq")) is not int or not 0 <= revision["message_seq"] <= len(self.messages)
+                    or revision.get("code_sha256") != hashlib.sha256(revision["source"].encode()).hexdigest()
+                    or revision.get("tests_sha256") != hashlib.sha256(self.baseline_tests.encode()).hexdigest()):
+                raise AgentError("代码快照或测试哈希不一致，不能继续工作流。")
+        if self.revisions and self.artifacts.get("solution.py") != self.revisions[-1]["source"]:
+            raise AgentError("当前代码与最新快照不一致。")
 
     def public(self):
         return asdict(self)
@@ -108,7 +127,7 @@ class RunStore:
         self.write(state.id, "state.json", json.dumps(state.public(), ensure_ascii=False, indent=2))
 
     def write(self, run_id, name, text):
-        if name not in {"state.json", "report.md", "solution.py", "test_solution.py"}:
+        if name not in {"state.json", "report.md", "evidence.json", "solution.py", "test_solution.py"}:
             raise AgentError("输出文件名无效。")
         folder = self.directory(run_id)
         folder.mkdir(parents=True, exist_ok=True)

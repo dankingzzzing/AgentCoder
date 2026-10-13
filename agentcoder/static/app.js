@@ -1,19 +1,21 @@
 "use strict";
 const el=id=>document.getElementById(id);
-const roleLabels={coding:"编码 Agent",review:"审查 Agent",repair:"修复 Agent"};
-const roles={coding:"交付实现与原始测试",review:"核对源码证据与测试结果",repair:"修复代码，保留原始测试"};
+const roleLabels={coding:"编码 Agent",review:"审查 Agent",repair:"修复 Agent",audit:"交付验收（规则）"};
+const roles={coding:"交付实现与原始测试",review:"核对源码证据与测试结果",repair:"修复代码，保留原始测试",audit:"核对冻结测试与最终交付"};
 const statuses={pending:"等待",running:"执行中",completed:"完成",failed:"失败",skipped:"跳过"};
 let config=null,token="",runId=null,state=null,report="",busy=false,lastSeq=0;
 
 function message(text,error=false){el("status").textContent=text;el("status").classList.toggle("error",error);}
 function setBusy(value){
   busy=value;
-  for(const id of ["run","new-run","task","source","source-path","pick-source","read-source","scenario","max-cycles","allow-exec","resume","settings"])el(id).disabled=value||(id==="run"&&!config?.configured);
+  for(const id of ["run","new-run","task","source","source-path","pick-source","read-source","scenario","example","max-cycles","allow-exec","resume","settings","edit-workflow"])el(id).disabled=value||(id==="run"&&!config?.configured);
+  el("download-bundle").disabled=value;
   el("cancel").hidden=!value;el("cancel").disabled=false;
   el("resume").hidden=value||!["failed","cancelled","running"].includes(state?.status);
   if(!value)el("task").readOnly=config?.mode==="demo";
 }
 function graph(value){
+  drawRoutes(value.graph);
   el("graph").replaceChildren();
   for(const node of value.graph.nodes){
     const item=document.createElement("div");item.className="node";item.dataset.node=node.id;item.dataset.state=value.nodes[node.id]||"pending";
@@ -41,12 +43,13 @@ function appendEvent(event){
   if(event.kind==="workflow_error")updateNode(event.agent,"failed");
   el("cycle").textContent=`修复 ${event.cycle}/${state?.max_cycles||3} 轮`;
 }
-function showState(value,text){
+function showState(value,text,evidence=null){
   state=value;runId=value.id;report=text||report;
   graph(value);el("trace").replaceChildren();lastSeq=0;
   value.events.forEach(appendEvent);
   el("resume").hidden=busy||!(["failed","cancelled","running"].includes(value.status));
   if(text){
+    renderEvidence(evidence);
     el("results").hidden=false;renderMarkdown(el("report"),text);
     el("code").textContent=value.artifacts["solution.py"]||"尚未交付代码。";
     el("tests").textContent=value.baseline_tests||"尚未交付测试。";
@@ -73,7 +76,7 @@ function applyConfig(value){
   el("model").value=config.model;el("base-url").value=config.base_url;el("api-style").value=config.api_style||"auto";
   el("remember").checked=config.remembered!==false||!config.configured;
   el("demo-options").hidden=config.mode!=="demo";el("source-section").hidden=config.mode==="demo";
-  if(config.mode==="demo"){el("task").value=config.demo_task;el("task").readOnly=true;el("source").value="";el("allow-exec").checked=true;}
+  if(config.mode==="demo"){el("task").value=config.demo_cases?.find(item=>item.id===el("example").value)?.task||config.demo_task;el("task").readOnly=true;el("source").value="";el("allow-exec").checked=true;}
   else{el("task").readOnly=false;if(!el("task").value)el("task").value=config.demo_task;}
   setBusy(false);
 }
@@ -113,8 +116,8 @@ async function run(resume=false){
   const started=Date.now();el("elapsed").textContent="0 秒";
   const clock=setInterval(()=>el("elapsed").textContent=Math.floor((Date.now()-started)/1000)+" 秒",1000);
   try{
-    const result=await frames(resume?"/api/resume":"/api/run",resume?{id:runId}:{task:el("task").value,initial_source:el("source").value,max_cycles:Number(el("max-cycles").value),allow_exec:el("allow-exec").checked,scenario:el("scenario").value});
-    showState(result.state,result.report);
+    const result=await frames(resume?"/api/resume":"/api/run",resume?{id:runId}:{task:el("task").value,initial_source:el("source").value,max_cycles:Number(el("max-cycles").value),allow_exec:el("allow-exec").checked,scenario:el("scenario").value,example:el("example").value,graph:workflowGraph});
+    showState(result.state,result.report,result.evidence);
     const last=result.state.reviews.at(-1)?.tests;
     message(result.state.status==="completed"?`工作流完成，最终测试状态：${last?.status||"未运行"}。`:result.state.error||"达到修复上限，仍有未解决问题。",result.state.status!=="completed");
     el("results").scrollIntoView({behavior:"smooth",block:"start"});
@@ -136,7 +139,7 @@ async function history(){
       title.textContent=row.task.slice(0,80);detail.textContent=`${row.status} · ${row.id.slice(0,8)} · 修复 ${row.cycle} 轮`;
       button.append(title,detail);button.disabled=busy||row.active;button.addEventListener("click",async()=>{
         try{const response=await fetch("/api/runs/"+row.id),loaded=await response.json();if(!response.ok)throw new Error(loaded.error);
-          showState(loaded.state,loaded.report);message("已打开运行记录，可查看交付文件和交接消息。");el("results").scrollIntoView({behavior:"smooth"});
+          showState(loaded.state,loaded.report,loaded.evidence);message("已打开运行记录，可查看交付文件和交接消息。");el("results").scrollIntoView({behavior:"smooth"});
         }catch(error){message(error.message,true);}});el("history").append(button);}
   }catch(error){message(error.message,true);}
 }
@@ -146,12 +149,12 @@ el("model-form").addEventListener("submit",event=>{event.preventDefault();saveSe
 el("run-form").addEventListener("submit",event=>{event.preventDefault();run();});el("resume").addEventListener("click",()=>run(true));
 el("cancel").addEventListener("click",async()=>{try{if(runId){await post("/api/cancel",{id:runId});message("已请求停止，等待当前操作退出并保存检查点。");el("cancel").disabled=true;}}catch(error){message(error.message,true);}});
 el("new-run").addEventListener("click",()=>{runId=null;state=null;report="";el("results").hidden=true;el("resume").hidden=true;el("trace").replaceChildren();lastSeq=0;
-  graph({graph:{nodes:[{id:"coding",agent:"coding"},{id:"review",agent:"review"},{id:"repair",agent:"repair"}]},nodes:{coding:"pending",review:"pending",repair:"pending"},cycle:0,max_cycles:Number(el("max-cycles").value)});
+  stopReplay();previewWorkflow();
   el("stage").textContent="等待开始新的协作。";el("elapsed").textContent="0 秒";message("已新建运行，保留模型配置。");});
 el("pick-source").addEventListener("click",()=>source(true));el("read-source").addEventListener("click",()=>source(false));el("refresh-history").addEventListener("click",history);
-document.querySelectorAll("[data-tab]").forEach(button=>button.addEventListener("click",()=>{for(const id of ["report","code","tests","messages"])el(id).hidden=id!==button.dataset.tab;document.querySelectorAll("[data-tab]").forEach(b=>b.classList.toggle("active",b===button));}));
+document.querySelectorAll("[data-tab]").forEach(button=>button.addEventListener("click",()=>{stopReplay();for(const id of ["report","code","tests","messages","evidence"])el(id).hidden=id!==button.dataset.tab;document.querySelectorAll("[data-tab]").forEach(b=>b.classList.toggle("active",b===button));}));
 el("download").addEventListener("click",()=>{const url=URL.createObjectURL(new Blob([report],{type:"text/markdown;charset=utf-8"})),a=document.createElement("a");a.href=url;a.download="agentcoder-report-"+(runId?.slice(0,8)||"run")+".md";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
 (async()=>{try{const response=await fetch("/api/config"),value=await response.json();if(!response.ok)throw new Error(value.error);token=value.csrf_token;applyConfig(value);
-  graph({graph:{nodes:[{id:"coding",agent:"coding"},{id:"review",agent:"review"},{id:"repair",agent:"repair"}]},nodes:{coding:"pending",review:"pending",repair:"pending"},cycle:0,max_cycles:3});
+  await setupStudio();previewWorkflow();
   if(!value.configured){el("settings-status").textContent=value.bootstrap_error||"验证成功后开始协作，也可以使用离线演示。";openSettings();}else message("已恢复本机模型配置，可直接开始协作。");await history();
 }catch(error){message(error.message,true);}})();

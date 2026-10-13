@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,6 +12,10 @@ from pathlib import Path
 from . import demo
 from .cli import configuration
 from .errors import AgentError, ProviderError
+from .delivery import make_bundle
+from .evidence import build_evidence
+from .fixtures import catalog, get_case
+from .graph import GraphStore, BUILTIN_KINDS, default_graph, audited_graph, validate_graph
 from .file_picker import pick_local_path
 from .inputs import read_source
 from .providers import LLMProvider
@@ -44,6 +49,12 @@ def create_server(root: Path, *, port=8767, config_file=None):
         mode = "demo" if is_demo else "llm"
     token = secrets.token_urlsafe(32)
     store = RunStore(root)
+    graph_store = GraphStore(root)
+    graph_error = ""
+    try:
+        selected_graph = graph_store.load()
+    except AgentError as exc:
+        selected_graph, graph_error = default_graph(), str(exc)
     active = {}
     lock, picker_lock = threading.Lock(), threading.Lock()
 
@@ -54,12 +65,14 @@ def create_server(root: Path, *, port=8767, config_file=None):
         def valid_host(self):
             return self.headers.get("Host") in {f"localhost:{self.server.server_port}", f"127.0.0.1:{self.server.server_port}"}
 
-        def send(self, status, value, content_type="application/json; charset=utf-8"):
+        def send(self, status, value, content_type="application/json; charset=utf-8", attachment=None):
             body = value if isinstance(value, bytes) else json.dumps(value, ensure_ascii=False).encode()
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            if attachment:
+                self.send_header("Content-Disposition", f'attachment; filename="{attachment}"')
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; frame-ancestors 'none'")
             self.end_headers()
@@ -72,7 +85,13 @@ def create_server(root: Path, *, port=8767, config_file=None):
                 return self.send(200, {"csrf_token": token, "configured": configured, "remembered": remembered,
                     "mode": mode, "api_key_configured": bool(config.api_key), "model": config.model,
                     "base_url": config.base_url, "api_style": config.api_style, "demo_task": demo.TASK,
+                    "demo_cases": catalog(),
                     "bootstrap_error": bootstrap_error})
+            if self.path == "/api/graph":
+                with lock:
+                    graph = copy.deepcopy(selected_graph)
+                return self.send(200, {"graph": graph, "error": graph_error,
+                    "presets": {"standard": default_graph(), "audited": audited_graph()}, "bindings": BUILTIN_KINDS})
             if self.path == "/api/history":
                 rows = store.history()
                 with lock:
@@ -82,13 +101,22 @@ def create_server(root: Path, *, port=8767, config_file=None):
             if self.path.startswith("/api/runs/"):
                 try:
                     run_id = self.path.removeprefix("/api/runs/")
+                    bundle = run_id.endswith("/bundle")
+                    if bundle:
+                        run_id = run_id.removesuffix("/bundle")
                     state = store.load(run_id)
                     with lock:
                         running = run_id in active
-                    return self.send(200, {"state": state.public(), "report": make_report(state), "active": running})
+                    if bundle:
+                        if running:
+                            return self.send(409, {"error": "该运行正在执行，请等待保存交付结果。"})
+                        return self.send(200, make_bundle(state), "application/zip", f"agentcoder-{state.id[:8]}.zip")
+                    return self.send(200, {"state": state.public(), "report": make_report(state),
+                        "evidence": build_evidence(state), "active": running})
                 except AgentError as exc:
                     return self.send(404, {"error": str(exc)})
             routes = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+                      "/studio.js": ("studio.js", "text/javascript; charset=utf-8"),
                       "/markdown.js": ("markdown.js", "text/javascript; charset=utf-8"), "/style.css": ("style.css", "text/css; charset=utf-8")}
             if self.path not in routes:
                 return self.send(404, {"error": "页面不存在。"})
@@ -126,14 +154,18 @@ def create_server(root: Path, *, port=8767, config_file=None):
                 if state.status in {"completed", "exhausted"}:
                     raise AgentError("该流程已结束，请创建新运行。")
             else:
-                if set(payload) - {"task", "initial_source", "max_cycles", "allow_exec", "scenario"}:
+                if set(payload) - {"task", "initial_source", "max_cycles", "allow_exec", "scenario", "example", "graph"}:
                     raise AgentError("工作流请求字段无效。")
                 task = payload.get("task", demo.TASK)
+                case = get_case(payload.get("example", "contracts"))
                 if mode == "demo":
-                    task = demo.TASK
+                    task = case.task
+                with lock:
+                    chosen_graph = copy.deepcopy(payload.get("graph", selected_graph))
+                validate_graph(chosen_graph, bindings=BUILTIN_KINDS)
                 state = WorkflowState.create(task, mode, initial_source=payload.get("initial_source", ""),
                     allow_exec=payload.get("allow_exec", False), max_cycles=payload.get("max_cycles", 3),
-                    scenario=payload.get("scenario", "buggy"))
+                    scenario=payload.get("scenario", "buggy"), example=case.id, graph=chosen_graph)
             provider = LLMProvider(config) if state.mode == "llm" else None
             cancelled = threading.Event()
             with lock:
@@ -156,7 +188,7 @@ def create_server(root: Path, *, port=8767, config_file=None):
                 runner = WorkflowRunner(store, provider=provider, test_timeout=config.test_timeout,
                                         on_event=lambda event: frame("event", event), cancelled=cancelled)
                 result = runner.run(state)
-                frame("result", {"state": result.public(), "report": make_report(result)})
+                frame("result", {"state": result.public(), "report": make_report(result), "evidence": build_evidence(result)})
             except (BrokenPipeError, ConnectionResetError):
                 return
             finally:
@@ -164,6 +196,7 @@ def create_server(root: Path, *, port=8767, config_file=None):
                     active.pop(state.id, None)
 
         def do_POST(self):
+            nonlocal selected_graph, graph_error
             if not self.valid_host() or not secrets.compare_digest(self.headers.get("X-Agent-Token", "").encode(), token.encode()):
                 return self.send(403, {"error": "请求验证失败，请刷新页面。"})
             if self.headers.get("Content-Type", "").split(";", 1)[0] != "application/json":
@@ -184,6 +217,16 @@ def create_server(root: Path, *, port=8767, config_file=None):
                     raise AgentError("请求必须是 JSON 对象。")
                 if self.path == "/api/settings":
                     return self.send(200, self.apply_settings(value))
+                if self.path in {"/api/graph", "/api/graph/validate"}:
+                    if set(value) != {"graph"}:
+                        raise AgentError("编排请求只能包含 graph。")
+                    validate_graph(value["graph"], bindings=BUILTIN_KINDS)
+                    if self.path == "/api/graph":
+                        with lock:
+                            graph_store.save(value["graph"])
+                            selected_graph, graph_error = copy.deepcopy(value["graph"]), ""
+                    return self.send(200, {"graph": value["graph"], "valid": True,
+                        "summary": "路由有效，编码必须审查、修复必须复审，观察节点没有无出口循环。"})
                 if self.path == "/api/run":
                     return self.execute(value)
                 if self.path == "/api/resume":

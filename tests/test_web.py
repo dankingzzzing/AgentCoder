@@ -9,6 +9,7 @@ from urllib.request import Request,urlopen
 
 from agentcoder.agents import CodingAgent
 from agentcoder.errors import ProviderError
+from agentcoder.graph import audited_graph, default_graph
 from agentcoder.settings_store import SettingsStore
 from agentcoder.web import create_server
 
@@ -98,3 +99,43 @@ class WebTests(unittest.TestCase):
         with self.assertRaises(HTTPError):self.post("/api/source",{"path":str(private)})
         with self.assertRaises(HTTPError) as error:self.post("/api/run",{"task":"x"*200000})
         self.assertEqual(error.exception.code,413)
+
+    def test_graph_preview_save_restart_and_historical_run_snapshot(self):
+        original=self.get("/api/graph")["graph"]
+        candidate=audited_graph()
+        self.assertTrue(self.post("/api/graph/validate",{"graph":candidate})["valid"])
+        self.assertEqual(self.get("/api/graph")["graph"],original)
+        self.post("/api/graph",{"graph":candidate})
+        self.post("/api/settings",{"demo":True,"remember":True})
+        with urlopen(self.request("/api/run",{"example":"prices","allow_exec":True}),timeout=5) as response:
+            final=[json.loads(line) for line in response][-1]["data"]
+        self.assertEqual(final["state"]["graph"],candidate)
+        self.assertEqual(final["state"]["nodes"]["delivery"],"completed")
+        self.assertEqual(final["evidence"]["acceptance"],"verified")
+        self.post("/api/graph",{"graph":default_graph()})
+        self.assertEqual(self.get("/api/runs/"+final["state"]["id"])["state"]["graph"],candidate)
+        self.stop();self.start()
+        self.assertEqual(self.get("/api/graph")["graph"],default_graph())
+
+    def test_invalid_graph_binding_or_route_is_rejected_before_starting(self):
+        bad=default_graph();bad["nodes"][0]["agent"]="unregistered"
+        for path in ("/api/graph","/api/graph/validate"):
+            with self.assertRaises(HTTPError) as error:self.post(path,{"graph":bad})
+            self.assertEqual(error.exception.code,400)
+        self.post("/api/settings",{"demo":True,"remember":False})
+        with self.assertRaises(HTTPError):self.post("/api/run",{"graph":bad})
+        self.assertEqual(self.get("/api/history")["runs"],[])
+        self.assertEqual(self.get("/api/graph")["graph"],default_graph())
+
+    def test_delivery_endpoint_downloads_just_the_requested_run(self):
+        import io
+        from zipfile import ZipFile
+        self.post("/api/settings",{"demo":True,"remember":False})
+        with urlopen(self.request("/api/run",{"allow_exec":True}),timeout=5) as response:
+            final=[json.loads(line) for line in response][-1]["data"]
+        with urlopen(self.base+"/api/runs/"+final["state"]["id"]+"/bundle",timeout=5) as response:
+            self.assertEqual(response.headers["Content-Type"],"application/zip")
+            self.assertIn("attachment",response.headers["Content-Disposition"])
+            with ZipFile(io.BytesIO(response.read())) as archive:
+                self.assertEqual(json.loads(archive.read("state.json"))["id"],final["state"]["id"])
+                self.assertNotIn(".env",archive.namelist())

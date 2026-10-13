@@ -25,6 +25,9 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="AgentCoder：编码、审查与修复协作工作流")
     sub = parser.add_subparsers(dest="command", required=True)
+    evaluation_parser = sub.add_parser("evaluate", help="运行十个离线工作流验收场景，不调用模型")
+    evaluation_parser.add_argument("--root", type=Path, default=Path.cwd())
+    evaluation_parser.add_argument("--output", type=Path, default=Path("artifacts/evaluation.json"))
     for command in ("demo", "run", "resume", "serve"):
         p = sub.add_parser(command)
         p.add_argument("--root", type=Path, default=Path.cwd())
@@ -38,6 +41,7 @@ def main():
             p.add_argument("--max-cycles", type=int, default=3)
             p.add_argument("--graph", type=Path, help="使用自定义 JSON 流程定义")
             if command == "demo":
+                p.add_argument("--example", choices=("contracts", "prices", "words"), default="contracts")
                 p.add_argument("--scenario", choices=("buggy", "clean"), default="buggy")
                 p.add_argument("--no-exec", action="store_true")
             else:
@@ -51,6 +55,14 @@ def main():
         root = args.root.resolve()
         if not root.is_dir():
             raise AgentError("项目目录不存在。")
+        if args.command == "evaluate":
+            from .evaluation import run_evaluation, evaluation_report
+            result = run_evaluation(root)
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            args.output.with_suffix(".md").write_text(evaluation_report(result), encoding="utf-8")
+            print(evaluation_report(result))
+            raise SystemExit(0 if result["all_passed"] else 1)
         if args.command == "serve":
             from .web import serve
             serve(root, port=args.port, config_file=args.config)
@@ -67,7 +79,9 @@ def main():
             if graph:
                 options["graph"] = graph
             if args.command == "demo":
-                state = WorkflowState.create(demo.TASK, "demo", scenario=args.scenario, allow_exec=not args.no_exec, **options)
+                from .fixtures import get_case
+                state = WorkflowState.create(get_case(args.example).task, "demo", scenario=args.scenario,
+                    example=args.example, allow_exec=not args.no_exec, **options)
             else:
                 source = read_source(args.source, root)["content"] if args.source else ""
                 state = WorkflowState.create(args.task, "llm", initial_source=source, allow_exec=args.allow_exec, **options)

@@ -24,7 +24,20 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Fixed example regression tests
         run: python -m unittest discover -s examples/fixed -v
+      - name: Frontend JavaScript syntax
+        run: node -e "for (const f of ['app.js','studio.js','markdown.js']) require('node:child_process').execFileSync(process.execPath,['--check','agentcoder/static/'+f],{stdio:'inherit'});"
       - name: Full three-agent demo
         run: python -m agentcoder demo --json --output artifacts/demo.json
       - name: Direct approval branch
         run: python -m agentcoder demo --scenario clean --json --output artifacts/clean.json
+      - name: Ten workflow acceptance scenarios
+        run: python -m agentcoder evaluate --output artifacts/evaluation.json
+      - name: Upload acceptance evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-${{ matrix.os }}-py${{ matrix.python }}
+          path: |
+            artifacts/evaluation.json
+            artifacts/evaluation.md
+            artifacts/demo.json
+            artifacts/clean.json
