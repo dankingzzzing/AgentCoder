@@ -134,6 +134,4 @@ python scripts/package_submission.py
 
 十个验收场景覆盖三类任务、直接通过、两轮修复、错误批准被实测否决、预算终止、检查点恢复、未实测和新增节点。[已运行的验收结果](docs/samples/evaluation.md)来自规则 Agent 与真实 unittest，检验编排机制，不能当作 LLM 缺陷检测准确率。CI 在每个环境重跑，并上传 JSON / Markdown 验收证据供下载。
 
-备份压缩包生成到 `artifacts/2412190104唐佳杰.zip`，排除真实密钥、内部运行数据和缓存，限制小于 200 MB。README、[DESIGN.md](DESIGN.md)、PPT 要求的 [Desgin.md](Desgin.md)、[要求对应](docs/REQUIREMENTS.md)与[验证记录](docs/VALIDATION.md)随源码交付。演示说明见 [DEMO.md](docs/DEMO.md)。
-
-本机整理为 `D:\软件开发agent设计\homework1` 和 `D:\软件开发agent设计\homework2`，各自保留独立 Git 仓库；本仓库内容对应 `homework2`。
+README、[DESIGN.md](DESIGN.md)、PPT 要求的 [Desgin.md](Desgin.md)、[要求对应](docs/REQUIREMENTS.md)与[验证记录](docs/VALIDATION.md)随源码交付。演示说明见 [DEMO.md](docs/DEMO.md)。
