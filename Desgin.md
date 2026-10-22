@@ -1,3 +1,3 @@
-# 作业设计文档
+# 设计文档入口
 
-完整设计见 [DESIGN.md](DESIGN.md)。本入口沿用作业 PPT 中的文件名 `Desgin.md`。
+完整架构、流程与实现说明见 [DESIGN.md](DESIGN.md)。

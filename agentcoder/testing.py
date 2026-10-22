@@ -20,7 +20,7 @@ def execute_tests(directory: Path, *, allowed=False, timeout=10, cancelled=None)
     environment.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1")
     started, reason = time.monotonic(), ""
     with tempfile.TemporaryFile() as output:
-        process = subprocess.Popen([sys.executable, "-m", "unittest", "discover", "-s", ".", "-p", "test_solution.py", "-v"],
+        process = subprocess.Popen([sys.executable, "-m", "unittest", "discover", "-s", ".", "-p", "test*.py", "-v"],
                                    cwd=directory, env=environment, stdout=output, stderr=subprocess.STDOUT,
                                    stdin=subprocess.DEVNULL, start_new_session=os.name != "nt")
         while process.poll() is None:

@@ -6,7 +6,7 @@ from pathlib import Path
 from zipfile import ZipFile, ZIP_DEFLATED
 
 ROOT = Path(__file__).resolve().parents[1]
-EXCLUDED = {".git", ".agentcoder", ".qa", ".venv", "__pycache__", "build", "dist", "artifacts", "node_modules", ".pytest_cache"}
+EXCLUDED = {".vscode", ".git", ".agentcoder", ".qa", ".venv", "__pycache__", "build", "dist", "artifacts", "node_modules", ".pytest_cache"}
 
 
 def included(path):

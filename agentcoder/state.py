@@ -31,6 +31,10 @@ class WorkflowState:
     example: str = "contracts"
     initial_source: str = ""
     initial_tests: str = ""
+    parent_run_id: str = ""
+    origin: str = "new"
+    initial_source_from: dict = field(default_factory=dict)
+    inherited_tests: list = field(default_factory=list)
     test_module: str = "solution"
     graph: dict = field(default_factory=default_graph)
     status: str = "created"
@@ -71,6 +75,26 @@ class WorkflowState:
         from .inputs import module_name
         get_case(self.example)
         module_name(self.test_module)
+        if (self.origin not in {"new", "continue"} or not isinstance(self.parent_run_id, str)
+                or not isinstance(self.initial_source_from, dict) or not isinstance(self.inherited_tests, list)
+                or len(self.inherited_tests) > 16):
+            raise AgentError("运行继承信息无效。")
+        if self.origin == "new":
+            if self.parent_run_id or self.initial_source_from or self.inherited_tests:
+                raise AgentError("新运行不能携带未确认的父运行信息。")
+        elif (not re.fullmatch(r"[a-f0-9]{32}", self.parent_run_id) or self.parent_run_id == self.id
+                or not self.initial_source or self.initial_source_from.get("run_id") != self.parent_run_id
+                or set(self.initial_source_from) != {"run_id", "version", "code_sha256"}
+                or (self.initial_source_from["version"] is not None and
+                    (type(self.initial_source_from["version"]) is not int or self.initial_source_from["version"] < 0))
+                or self.initial_source_from["code_sha256"] != hashlib.sha256(self.initial_source.encode()).hexdigest()):
+            raise AgentError("继承源码与父运行版本不一致。")
+        for item in self.inherited_tests:
+            if (not isinstance(item, dict) or set(item) != {"run_id", "source", "sha256"}
+                    or not isinstance(item["run_id"], str) or not re.fullmatch(r"[a-f0-9]{32}", item["run_id"])
+                    or not isinstance(item["source"], str) or not 0 < len(item["source"].encode()) <= 65536
+                    or item["sha256"] != hashlib.sha256(item["source"].encode()).hexdigest()):
+                raise AgentError("继承测试内容或哈希无效。")
         graph_nodes = validate_graph(self.graph)
         if (not isinstance(self.id, str) or not re.fullmatch(r"[a-f0-9]{32}", self.id)
                 or self.version != 1 or self.mode not in {"demo", "llm"}
@@ -142,7 +166,7 @@ class RunStore:
         self.write(state.id, "state.json", json.dumps(state.public(), ensure_ascii=False, indent=2))
 
     def write(self, run_id, name, text):
-        if name not in {"state.json", "report.md", "evidence.json", "solution.py", "test_solution.py"}:
+        if name not in {"state.json", "report.md", "evidence.json", "solution.py", "test_solution.py", *(f"test_inherited_{index:02d}.py" for index in range(1, 17))}:
             from .inputs import module_name
             if not isinstance(name,str) or not name.endswith('.py'):
                 raise AgentError("输出文件名无效。")
@@ -177,7 +201,9 @@ class RunStore:
         for folder in sorted(self.folder.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)[:50]:
             try:
                 state = self.load(folder.name)
-                rows.append({k: getattr(state, k) for k in ("id", "task", "mode", "status", "phase", "cycle", "updated_at")})
+                row = {k: getattr(state, k) for k in ("id", "task", "mode", "status", "phase", "cycle", "updated_at", "parent_run_id", "origin")}
+                row["has_source"] = bool(state.artifacts.get("solution.py"))
+                rows.append(row)
             except AgentError:
                 continue
         return rows

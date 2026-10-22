@@ -3,20 +3,23 @@ const el=id=>document.getElementById(id);
 const roleLabels={coding:"编码 Agent",review:"审查 Agent",repair:"修复 Agent",audit:"交付验收（规则）"};
 const roles={coding:"交付实现与原始测试",review:"核对源码证据与测试结果",repair:"修复代码，保留原始测试",audit:"核对冻结测试与最终交付"};
 const statuses={pending:"等待",running:"执行中",completed:"完成",failed:"失败",skipped:"跳过"};
-let config=null,token="",runId=null,state=null,report="",busy=false,lastSeq=0;
+let config=null,token="",runId=null,state=null,report="",busy=false,lastSeq=0,visibleStep=0;
 let activeController=null,cancelRequested=false,cancelTimer=null;
 
 function message(text,error=false){el("status").textContent=text;el("status").classList.toggle("error",error);}
 function setBusy(value){
   busy=value;
-  for(const id of ["run","new-run","pick-source","read-source","scenario","example","max-cycles","allow-exec","resume","settings","edit-workflow","use-workspace","pick-workspace","known-workspaces","create-file"])el(id).disabled=value||(id==="run"&&!config?.configured);
+  for(const id of ["run","new-run","pick-source","read-source","scenario","example","max-cycles","allow-exec","static-only","resume","continue-run","settings","edit-workflow","use-workspace","pick-workspace","known-workspaces","create-file"])el(id).disabled=value||(id==="run"&&!config?.configured);
   for(const id of ["source","source-path","workspace-path","new-filename","new-file-content"])el(id).readOnly=value;
-  el("task").readOnly=value||config?.mode==="demo";
+  el("task").readOnly=value||Boolean(iterationBase)||config?.mode==="demo";el("iteration-request").readOnly=value;
   for(const button of el("workspace-files").querySelectorAll("button"))button.disabled=value;
+  for(const button of el("history").querySelectorAll("button"))button.disabled=value||button.dataset.locked==="true";
+  for(const link of el("history").querySelectorAll("a"))link.setAttribute("aria-disabled",String(value||link.dataset.locked==="true"));
   el("download-bundle").disabled=value;
   el("cancel").hidden=!value;el("cancel").disabled=value&&cancelRequested;el("cancel").textContent=cancelRequested?"正在停止…":"停止运行";
   el("resume").hidden=value||!["failed","cancelled","running"].includes(state?.status);
-  if(!value)el("task").readOnly=config?.mode==="demo";
+  el("continue-run").hidden=value||!state?.artifacts?.["solution.py"]||!["completed","exhausted"].includes(state?.status);
+  updateRunSummary();
 }
 function graph(value){
   drawRoutes(value.graph);
@@ -36,11 +39,6 @@ function updateNode(id,status){
 }
 function appendEvent(event){
   if(event.seq<=lastSeq)return;lastSeq=event.seq;
-  const item=document.createElement("li"),title=document.createElement("strong"),detail=document.createElement("span");
-  title.textContent=`${String(event.seq).padStart(2,"0")} · ${roleLabels[event.agent]||event.agent||"工作流"}`;
-  detail.textContent=event.message;
-  if(event.kind==="workflow_error")item.classList.add("failed");
-  item.append(title,detail);el("trace").append(item);el("trace").scrollTop=el("trace").scrollHeight;
   el("stage").textContent=event.message;
   if(event.kind==="model_progress")el("model-progress").textContent=`请求 ${event.data.attempt||1} · ${event.data.transport==="buffered"?"普通响应":"流式响应"} · ${event.data.signals||0} 次响应信号 · ${event.data.public_chars||0} 个公开交付字符`;
   if(event.kind==="node_start")updateNode(event.agent,"running");
@@ -48,13 +46,23 @@ function appendEvent(event){
   if(event.kind==="workflow_error")updateNode(event.agent,"failed");
   if(event.kind==="workflow_cancelled")updateNode(event.agent,"pending");
   el("cycle").textContent=`修复 ${event.cycle}/${state?.max_cycles||3} 轮`;
+  if(["activity","model_progress"].includes(event.kind))return;
+  const trace=el("trace"),follow=trace.scrollHeight-trace.scrollTop-trace.clientHeight<40;
+  const item=document.createElement("li"),badge=document.createElement("span"),body=document.createElement("div"),title=document.createElement("strong"),detail=document.createElement("span");
+  badge.className="trace-index";badge.textContent=String(++visibleStep).padStart(2,"0");
+  title.textContent=roleLabels[event.agent]||event.agent||"工作流";detail.textContent=event.message;
+  item.dataset.eventSeq=event.seq;if(event.kind==="workflow_error")item.classList.add("failed");
+  body.append(title,detail);item.append(badge,body);trace.append(item);
+  while(trace.children.length>200)trace.firstElementChild.remove();
+  if(follow)trace.scrollTop=trace.scrollHeight;
 }
 function showState(value,text,evidence=null){
   state=value;runId=value.id;report=text||report;
-  graph(value);el("trace").replaceChildren();lastSeq=0;
+  graph(value);el("trace").replaceChildren();lastSeq=0;visibleStep=0;
   value.events.forEach(appendEvent);
-  showDrafts({drafts:value.drafts,summary:value.progress?.summary,progress:value.progress});
+  showDrafts({drafts:value.drafts,summary:value.progress?.summary,progress:value.progress,status:value.status});
   el("resume").hidden=busy||!(["failed","cancelled","running"].includes(value.status));
+  el("continue-run").hidden=busy||!value.artifacts["solution.py"]||!["completed","exhausted"].includes(value.status);
   if(text){
     renderEvidence(evidence);
     el("results").hidden=false;renderMarkdown(el("report"),text);
@@ -78,13 +86,15 @@ function openSettings(){
   if(!el("model-dialog").open)el("model-dialog").showModal();
 }
 function applyConfig(value){
+  const previousMode=config?.mode;
   config={...config,...value};
+  if(previousMode==="demo"&&config.mode==="llm")el("static-only").checked=true;
   el("mode").textContent=config.mode==="demo"?"离线教学演示 · 三个规则 Agent（非 LLM）":`真实模型 · ${config.model}`;
   el("model").value=config.model;el("base-url").value=config.base_url;el("api-style").value=config.api_style||"auto";
   el("stream-mode").value=config.stream_mode||"auto";el("stream-timeout").value=config.stream_idle_timeout||120;
   el("remember").checked=config.remembered!==false||!config.configured;
-  el("demo-options").hidden=config.mode!=="demo";el("source-section").hidden=config.mode==="demo";
-  if(config.mode==="demo"){el("task").value=config.demo_cases?.find(item=>item.id===el("example").value)?.task||config.demo_task;el("task").readOnly=true;el("source").value="";el("allow-exec").checked=true;}
+  el("demo-options").hidden=config.mode!=="demo"||Boolean(iterationBase);el("source-section").hidden=config.mode==="demo"||Boolean(iterationBase);
+  if(config.mode==="demo"&&!iterationBase){el("task").value=config.demo_cases?.find(item=>item.id===el("example").value)?.task||config.demo_task;el("task").readOnly=true;el("source").value="";if(config.configured)el("allow-exec").checked=true;}
   else{el("task").readOnly=false;if(!el("task").value)el("task").value=config.demo_task;}
   setBusy(false);
 }
@@ -120,37 +130,34 @@ async function frames(path,payload){
 }
 async function run(resume=false){
   if(!config?.configured){openSettings();return;}
+  if(!resume&&iterationBase&&config.mode!=="llm"){message("继续迭代新增需求需要真实模型，请先切换模型设置。",true);openSettings();return;}
   cancelRequested=false;activeController=new AbortController();if(!resume){runId=null;state=null;showDrafts(null);el("model-progress").textContent="";}
   setBusy(true);message(resume?"正在恢复失败节点…":"正在开始多 Agent 协作…");el("resume").hidden=true;
-  if(!resume){el("results").hidden=true;report="";el("trace").replaceChildren();lastSeq=0;}
+  if(!resume){el("results").hidden=true;report="";el("trace").replaceChildren();lastSeq=0;visibleStep=0;}
   const started=Date.now();el("elapsed").textContent="0 秒";
   const clock=setInterval(()=>el("elapsed").textContent=Math.floor((Date.now()-started)/1000)+" 秒",1000);
   try{
-    const result=await frames(resume?"/api/resume":"/api/run",resume?{id:runId}:{task:el("task").value,initial_source:config.mode==="demo"?"":el("source").value,max_cycles:Number(el("max-cycles").value),allow_exec:el("allow-exec").checked,scenario:el("scenario").value,example:el("example").value,graph:workflowGraph,workspace_id:currentWorkspace?.id});
+    const payload={task:iterationBase?el("iteration-request").value:el("task").value,max_cycles:Number(el("max-cycles").value),allow_exec:el("allow-exec").checked,graph:workflowGraph,workspace_id:currentWorkspace?.id};
+    if(iterationBase)payload.parent_run_id=iterationBase.id;
+    else Object.assign(payload,{initial_source:config.mode==="demo"?"":el("source").value,scenario:el("scenario").value,example:el("example").value});
+    const result=await frames(resume?"/api/resume":iterationBase?"/api/continue":"/api/run",resume?{id:runId}:payload);
     showState(result.state,result.report,result.evidence);
     const last=result.state.reviews.at(-1)?.tests;
     message(result.state.status==="completed"?`工作流完成，最终测试状态：${last?.status||"未运行"}。`:result.state.error||"达到修复上限，仍有未解决问题。",!["completed","cancelled"].includes(result.state.status));
     el("results").scrollIntoView({behavior:"smooth",block:"start"});
   }catch(error){message(error.name==="AbortError"?"已停止接收，已完成交付和检查点会保留。":error.message,error.name!=="AbortError");if(runId){try{const response=await fetch("/api/runs/"+runId),loaded=await response.json();if(response.ok)showState(loaded.state,loaded.report,loaded.evidence);}catch{}}}
-  finally{clearInterval(clock);clearTimeout(cancelTimer);cancelTimer=null;activeController=null;cancelRequested=false;setBusy(false);await history();}
+  finally{clearInterval(clock);el("elapsed").textContent=((Date.now()-started)/1000).toFixed(1)+" 秒";clearTimeout(cancelTimer);cancelTimer=null;activeController=null;cancelRequested=false;setBusy(false);await history();}
 }
 async function source(native){
   try{
     const value=await post(native?"/api/pick":"/api/source",native?{}:{path:el("source-path").value});
     if(value.cancelled){message("已取消选择。");return;}
-    el("source-path").value=value.path;el("source").value=value.content;message(value.kind==="tests"?`识别到回归测试，将为 ${value.module} 生成实现，原测试冻结不修改。`:"已读取本地模块，原文件不会被修改。");
+    clearIteration();el("source-path").value=value.path;el("source").value=value.content;updateRunSummary();message(value.kind==="tests"?`识别到回归测试，将为 ${value.module} 生成实现，原测试冻结不修改。`:"已读取本地模块，原文件不会被修改。");
   }catch(error){message(error.message,true);}
 }
 async function history(){
   try{
-    const response=await fetch("/api/history"),value=await response.json();el("history").replaceChildren();
-    if(!value.runs.length){el("history").textContent="还没有运行记录。";return;}
-    for(const row of value.runs){const button=document.createElement("button"),title=document.createElement("strong"),detail=document.createElement("span");
-      title.textContent=row.task.slice(0,80);detail.textContent=`${row.status} · ${row.id.slice(0,8)} · 修复 ${row.cycle} 轮`;
-      button.append(title,detail);button.disabled=busy||row.active;button.addEventListener("click",async()=>{
-        try{const response=await fetch("/api/runs/"+row.id),loaded=await response.json();if(!response.ok)throw new Error(loaded.error);
-          showState(loaded.state,loaded.report,loaded.evidence);message("已打开运行记录，可查看交付文件和交接消息。");el("results").scrollIntoView({behavior:"smooth"});
-        }catch(error){message(error.message,true);}});el("history").append(button);}
+    const response=await fetch("/api/history"),value=await response.json();renderHistory(value.runs);
   }catch(error){message(error.message,true);}
 }
 el("settings").addEventListener("click",openSettings);el("close-settings").addEventListener("click",()=>el("model-dialog").close());
@@ -161,11 +168,15 @@ el("cancel").addEventListener("click",async()=>{if(!busy)return;cancelRequested=
   cancelTimer=setTimeout(()=>activeController?.abort(),2000);
   if(!runId){activeController?.abort();return;}
   try{await post("/api/cancel",{id:runId});}catch{activeController?.abort();}});
-el("new-run").addEventListener("click",()=>{runId=null;state=null;report="";el("results").hidden=true;el("resume").hidden=true;el("trace").replaceChildren();lastSeq=0;
+function resetNewRun(){runId=null;state=null;report="";el("results").hidden=true;el("resume").hidden=true;el("trace").replaceChildren();lastSeq=0;
+  visibleStep=0;clearIteration(true);el("continue-run").hidden=true;el("demo-options").hidden=config?.mode!=="demo";
   showDrafts(null);
   stopReplay();previewWorkflow();
-  el("stage").textContent="等待开始新的协作。";el("elapsed").textContent="0 秒";message("已新建运行，保留模型配置。");});
+  el("stage").textContent="等待开始新的协作。";el("elapsed").textContent="0 秒";message("已新建运行，保留模型配置。");}
+el("new-run").addEventListener("click",resetNewRun);
 el("pick-source").addEventListener("click",()=>source(true));el("read-source").addEventListener("click",()=>source(false));el("refresh-history").addEventListener("click",history);
+el("continue-run").addEventListener("click",()=>prepareIteration(runId));
+for(const id of ["source","max-cycles","allow-exec","static-only"])el(id).addEventListener("input",updateRunSummary);
 document.querySelectorAll("[data-tab]").forEach(button=>button.addEventListener("click",()=>{stopReplay();for(const id of ["report","code","tests","messages","evidence"])el(id).hidden=id!==button.dataset.tab;document.querySelectorAll("[data-tab]").forEach(b=>b.classList.toggle("active",b===button));}));
 el("download").addEventListener("click",()=>{const url=URL.createObjectURL(new Blob([report],{type:"text/markdown;charset=utf-8"})),a=document.createElement("a");a.href=url;a.download="agentcoder-report-"+(runId?.slice(0,8)||"run")+".md";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
 (async()=>{try{const response=await fetch("/api/config"),value=await response.json();if(!response.ok)throw new Error(value.error);token=value.csrf_token;applyConfig(value);

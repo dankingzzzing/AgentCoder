@@ -24,6 +24,7 @@ from .settings_store import SettingsStore
 from .state import RunStore, WorkflowState
 from .workflow import WorkflowRunner
 from .workspaces import Workspaces
+from .continuation import continue_run
 
 
 STATIC = Path(__file__).parent / "static"
@@ -123,6 +124,7 @@ def create_server(root: Path, *, port=8767, config_file=None):
             routes = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                       "/studio.js": ("studio.js", "text/javascript; charset=utf-8"),
                       "/workspace.js": ("workspace.js", "text/javascript; charset=utf-8"),
+                      "/continuation.js": ("continuation.js", "text/javascript; charset=utf-8"),
                       "/markdown.js": ("markdown.js", "text/javascript; charset=utf-8"), "/style.css": ("style.css", "text/css; charset=utf-8")}
             if self.path not in routes:
                 return self.send(404, {"error": "页面不存在。"})
@@ -151,7 +153,7 @@ def create_server(root: Path, *, port=8767, config_file=None):
                     "stream_mode": config.stream_mode, "stream_idle_timeout": config.stream_idle_timeout,
                     "base_url": config.base_url, "api_style": config.api_style}
 
-        def execute(self, payload, resume=False):
+        def execute(self, payload, resume=False, continuation=False):
             if not configured:
                 raise AgentError("请先配置模型或进入离线演示。")
             if resume:
@@ -161,6 +163,20 @@ def create_server(root: Path, *, port=8767, config_file=None):
                 state = run_store.load(payload["id"])
                 if state.status in {"completed", "exhausted"}:
                     raise AgentError("该流程已结束，请创建新运行。")
+            elif continuation:
+                if set(payload) - {"parent_run_id", "task", "max_cycles", "allow_exec", "graph", "workspace_id"}:
+                    raise AgentError("继续迭代请求字段无效。")
+                parent_id = payload.get("parent_run_id")
+                with lock:
+                    if parent_id in active:
+                        raise AgentError("父运行仍在执行，请等待交付后再继续迭代。")
+                parent = workspaces.locate_run(parent_id).load(parent_id)
+                chosen_graph = copy.deepcopy(payload.get("graph", parent.graph))
+                validate_graph(chosen_graph, bindings=BUILTIN_KINDS)
+                run_store = RunStore(workspaces.get(payload.get("workspace_id")))
+                state = continue_run(parent, payload.get("task"), mode=mode,
+                    allow_exec=payload.get("allow_exec", False), max_cycles=payload.get("max_cycles", 3),
+                    graph=chosen_graph, workdir=str(run_store.root))
             else:
                 if set(payload) - {"task", "initial_source", "max_cycles", "allow_exec", "scenario", "example", "graph", "workspace_id"}:
                     raise AgentError("工作流请求字段无效。")
@@ -268,6 +284,8 @@ def create_server(root: Path, *, port=8767, config_file=None):
                     return self.execute(value)
                 if self.path == "/api/resume":
                     return self.execute(value, resume=True)
+                if self.path == "/api/continue":
+                    return self.execute(value, continuation=True)
                 if self.path == "/api/cancel":
                     with lock:
                         event = active.get(value.get("id"))

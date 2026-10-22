@@ -11,3 +11,4 @@ build/
 dist/
 artifacts/
 .pytest_cache/
+.vscode/

@@ -111,6 +111,8 @@ class WorkflowRunner:
             self.store.write(self.state.id, name, text)
         if self.state.test_module != 'solution' and 'solution.py' in self.state.artifacts:
             self.store.write(self.state.id,self.state.test_module+'.py',self.state.artifacts['solution.py'])
+        for index, item in enumerate(self.state.inherited_tests, 1):
+            self.store.write(self.state.id, f"test_inherited_{index:02d}.py", item["source"])
 
     def inspect(self, source, state):
         self.check_cancelled()
@@ -145,6 +147,9 @@ class WorkflowRunner:
         visits = 0
         try:
             self.emit("workflow_start", "工作流已开始，从当前检查点继续。", data={"id": state.id, "phase": state.phase})
+            if state.parent_run_id and not state.artifacts:
+                self.emit("run_inherited", f"继承运行 {state.parent_run_id[:8]} 的源码与 {len(state.inherited_tests)} 组回归测试；编码节点保留源码，为新增要求补充测试。",
+                          data={"parent_run_id":state.parent_run_id, "initial_source_from":state.initial_source_from})
             if state.initial_tests and not state.artifacts:
                 self.emit("input_detected", f"识别到用户回归测试，生成 {state.test_module} 对应实现；原始测试将冻结不修改。")
             while state.phase != "done":

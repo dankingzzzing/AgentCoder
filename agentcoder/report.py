@@ -31,6 +31,10 @@ def make_report(state):
              f"流程：{cell(state.graph['name'])}。本次运行保存了完整流程定义，后续编排修改不影响该记录。", "",
              "| 节点 | 执行状态 | 已记录执行耗时（秒） |", "| --- | --- | --- |"]
     lines += [f"| {cell(name)} | {status} | {evidence['node_seconds'].get(name, '—')} |" for name, status in state.nodes.items()]
+    if state.parent_run_id:
+        lines += ["", "### 版本来源", "", f"基于父运行 `{state.parent_run_id}` 继续迭代，继承源码版本 `{state.initial_source_from['version']}`。",
+                  f"继承源码 SHA-256：`{state.initial_source_from['code_sha256']}`。",
+                  f"保留 {len(state.inherited_tests)} 组历史回归测试，新增测试在本轮编码交付后冻结。父运行记录不会改写。", ""]
     lines += ["", f"修复轮次：{state.cycle}/{state.max_cycles}；消息数量：{len(state.messages)}。",
               "原始回归测试由编码节点生成后冻结，修复节点只改 solution.py。", "", "## 消息交接", "",
               "角色摘要记录公开交付说明；实际代码变更以版本差异为准，运行结果以控制器实测表为准。", "",
@@ -88,6 +92,8 @@ def make_report(state):
     lines += [f"- `{name}`：{'最新模块' if name == 'solution.py' else '原始回归测试'}。" for name in state.artifacts]
     if state.test_module != 'solution' and 'solution.py' in state.artifacts:
         lines.append(f"- `{state.test_module}.py`：与 solution.py 同一实现，保留原始测试的导入模块名。")
+    for index, item in enumerate(state.inherited_tests, 1):
+        lines.append(f"- `test_inherited_{index:02d}.py`：继承自运行 `{item['run_id']}` 的原始测试，SHA-256 `{item['sha256']}`。")
     lines += ["- `state.json`：状态、消息和实际事件。", "- `report.md`：本报告。", "",
               "- `evidence.json`：逐轮源码、代码差异、测试对比与验收指标。", "",
               "没有开启测试执行时，报告明确显示 not_run；模型建议与静态检查不能替代运行验证。"]

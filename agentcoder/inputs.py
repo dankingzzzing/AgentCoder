@@ -12,7 +12,7 @@ RESERVED_MODULES = {name.casefold() for name in getattr(sys,'stdlib_module_names
 
 def module_name(value):
     if (not isinstance(value, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", value)
-            or value.casefold() in RESERVED_MODULES
+            or value.casefold() in RESERVED_MODULES or value.casefold().startswith('test_inherited_')
             or value.casefold() in {"test_solution","agentcoder","con","prn","aux","nul",*(f"com{i}" for i in range(1,10)),*(f"lpt{i}" for i in range(1,10))}):
         raise AgentError("被测模块名必须是单个普通 Python 模块名，不能覆盖标准库或系统保留名。")
     return value

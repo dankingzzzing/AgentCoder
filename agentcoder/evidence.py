@@ -56,6 +56,9 @@ def build_evidence(state):
         elif event["kind"] in {"node_done", "workflow_error", "limit"} and node in starts:
             node_seconds[node] = round(node_seconds.get(node, 0) + max(0, (instant - starts.pop(node)).total_seconds()), 3)
     return {"run_id": state.id, "status": state.status, "mode": state.mode,
+        "origin": state.origin, "parent_run_id":state.parent_run_id,
+        "initial_source_from":state.initial_source_from,
+        "inherited_tests":[{"run_id":item["run_id"],"sha256":item["sha256"]} for item in state.inherited_tests],
         "acceptance": "verified" if verified else "unverified" if state.status == "completed" else "unfinished",
         "final_tests": latest["tests"]["status"] if latest else "not_started", "tests_run": latest["tests"]["tests_run"] if latest else None,
         "tests_frozen": frozen, "tests_sha256": digest(state.baseline_tests) if frozen else None,
