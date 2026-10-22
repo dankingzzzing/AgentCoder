@@ -140,7 +140,6 @@ python -m unittest discover -s tests -v
 python -m unittest discover -s examples/fixed -v
 python -m agentcoder evaluate --output artifacts/evaluation.json
 python scripts/package_submission.py
-python scripts/package_submission.py --name "学号姓名"
 ```
 
 含缺陷示例的测试失败是预期输入，用于验证审查和修复；修复后的八个回归测试应通过。GitHub Actions 检查 Linux/Windows × Python 3.10/3.13，覆盖流程、消息、恢复、条件分支、扩展节点与接口协议。
